@@ -1,0 +1,43 @@
+# Dependencies and caches
+node_modules/
+.npm/
+.expo/
+.turbo/
+
+# Generated native projects and build outputs
+android/
+ios/
+dist/
+web-build/
+build/
+releases/*.apk
+releases/*.aab
+
+# Local environment and data
+.env
+.env.*
+!.env.example
+*.db
+*.db-shm
+*.db-wal
+
+# Signing credentials
+*.jks
+*.keystore
+*.p8
+*.p12
+*.key
+*.mobileprovision
+credentials.json
+
+# Tooling and OS
+expo-env.d.ts
+*.tsbuildinfo
+*.log
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Local preservation of the former monorepo; never publish it.
+.local-archive/
