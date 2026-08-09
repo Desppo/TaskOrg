@@ -14,7 +14,7 @@ TaskOrg is a bilingual, local-first mobile planner built for people who want str
 ## Highlights
 
 - Frictionless inbox for ideas that are not organized yet.
-- Today view with overdue, scheduled, and unscheduled tasks.
+- **Tasks** view with three clear sections: Today (overdue + due today), Upcoming (future dates grouped by day), and No date.
 - Projects with configurable Kanban-style columns.
 - Calendar in agenda, week, and month modes.
 - Guided daily review: completed work, pending work, and free-form notes.

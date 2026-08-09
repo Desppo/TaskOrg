@@ -196,6 +196,17 @@ export const taskRepository = {
     return rows.map(mapTask);
   },
 
+  async listUpcoming(db: SQLiteDatabase, afterDate: string): Promise<TaskItem[]> {
+    const rows = await db.getAllAsync<TaskRow>(
+      `${TASK_SELECT}
+       WHERE deleted_at IS NULL AND status = 'OPEN'
+         AND due_date > ?
+       ORDER BY due_date ASC, priority DESC, created_at ASC`,
+      afterDate,
+    );
+    return rows.map(mapTask);
+  },
+
   async listUnscheduled(db: SQLiteDatabase): Promise<TaskItem[]> {
     const rows = await db.getAllAsync<TaskRow>(
       `${TASK_SELECT}

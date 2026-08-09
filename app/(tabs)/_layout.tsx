@@ -54,7 +54,7 @@ export default function TabsLayout() {
       }}
     >
       <Tabs.Screen name="home" options={{ title: t('tabHome'), tabBarIcon: ({ focused }) => <TabIcon active={focused} icon="home-outline" iconActive="home" /> }} />
-      <Tabs.Screen name="today" options={{ title: t('tabToday'), tabBarIcon: ({ focused }) => <TabIcon active={focused} icon="checkmark-circle-outline" iconActive="checkmark-circle" /> }} />
+      <Tabs.Screen name="today" options={{ title: t('tabToday'), tabBarIcon: ({ focused }) => <TabIcon active={focused} icon="list-circle-outline" iconActive="list-circle" /> }} />
       <Tabs.Screen name="inbox" options={{ title: t('tabInbox'), tabBarIcon: ({ focused }) => <TabIcon active={focused} icon="file-tray-outline" iconActive="file-tray-full" /> }} />
       <Tabs.Screen name="calendar" options={{ title: t('tabCalendar'), tabBarIcon: ({ focused }) => <TabIcon active={focused} icon="calendar-clear-outline" iconActive="calendar" /> }} />
       <Tabs.Screen name="projects" options={{ title: t('tabProjects'), tabBarIcon: ({ focused }) => <TabIcon active={focused} icon="grid-outline" iconActive="grid" /> }} />
