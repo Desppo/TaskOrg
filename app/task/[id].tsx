@@ -4,8 +4,8 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { TaskFormFields } from '@/components/task-form-fields';
 import { ActionButton, BackButton, Card, LoadingView, Screen, ScreenHeader } from '@/components/ui';
-import { projectRepository, taskRepository } from '@/data/repositories';
-import type { Priority, ProjectDestination, TaskItem } from '@/data/types';
+import { projectRepository, recurrenceRepository, taskRepository } from '@/data/repositories';
+import type { Priority, ProjectDestination, RecurrenceDraft, TaskItem } from '@/data/types';
 import { useDataVersion } from '@/providers/data-version-provider';
 import { useLanguage } from '@/providers/language-provider';
 import { useAppTheme } from '@/theme/theme';
@@ -27,6 +27,7 @@ export default function TaskEditorScreen() {
   const [priority, setPriority] = useState<Priority>(0);
   const [projectId, setProjectId] = useState<string | null>(null);
   const [columnId, setColumnId] = useState<string | null>(null);
+  const [recurrenceDraft, setRecurrenceDraft] = useState<RecurrenceDraft | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -38,8 +39,12 @@ export default function TaskEditorScreen() {
       setLoading(false);
       return () => { active = false; };
     }
-    Promise.all([taskRepository.getById(db, taskId), projectRepository.listDestinations(db)])
-      .then(([nextTask, nextProjects]) => {
+    Promise.all([
+      taskRepository.getById(db, taskId),
+      projectRepository.listDestinations(db),
+      recurrenceRepository.getRule(db, taskId),
+    ])
+      .then(([nextTask, nextProjects, nextRule]) => {
         if (!active) return;
         setTask(nextTask);
         setProjects(nextProjects);
@@ -50,6 +55,14 @@ export default function TaskEditorScreen() {
           setPriority(nextTask.priority);
           setProjectId(nextTask.projectId);
           setColumnId(nextTask.columnId);
+        }
+        if (nextRule) {
+          setRecurrenceDraft({
+            frequency: nextRule.frequency,
+            intervalValue: nextRule.intervalValue,
+            daysOfWeek: nextRule.daysOfWeek,
+            endDate: nextRule.endDate,
+          });
         }
       })
       .catch(() => { if (active) setError(t('errorGeneric')); })
@@ -67,6 +80,10 @@ export default function TaskEditorScreen() {
     if (!task || !title.trim()) return;
     const cleanDate = dueDate.trim();
     if (cleanDate && !isValidDateKey(cleanDate)) {
+      setError(t('invalidDate'));
+      return;
+    }
+    if (recurrenceDraft?.endDate && !isValidDateKey(recurrenceDraft.endDate)) {
       setError(t('invalidDate'));
       return;
     }
@@ -99,6 +116,18 @@ export default function TaskEditorScreen() {
         nextStatus,
         nextCompletedOn,
       );
+
+      // Save or delete recurrence rule
+      if (recurrenceDraft) {
+        const startDate = cleanDate || today;
+        await recurrenceRepository.saveRule(db, task.id, recurrenceDraft, startDate);
+        // Generate occurrences immediately so they show up in Tasks
+        const rule = await recurrenceRepository.getRule(db, task.id);
+        if (rule) await recurrenceRepository.generateForRule(db, rule, today);
+      } else {
+        await recurrenceRepository.deleteRule(db, task.id);
+      }
+
       refresh();
       router.back();
     } catch {
@@ -156,10 +185,12 @@ export default function TaskEditorScreen() {
           onDueDateChange={(value) => { setDueDate(value); setError(''); }}
           onNotesChange={setNotes}
           onPriorityChange={setPriority}
+          onRecurrenceChange={setRecurrenceDraft}
           onTitleChange={setTitle}
           priority={priority}
           projectId={projectId}
           projects={projects}
+          recurrenceDraft={recurrenceDraft}
           title={title}
         />
       </Card>

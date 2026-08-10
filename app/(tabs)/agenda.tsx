@@ -73,7 +73,13 @@ export default function AgendaScreen() {
   const [pending, setPending] = useState<TaskItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [saveState, setSaveState] = useState<SaveState>('idle');
+  const [lastReviewDate, setLastReviewDate] = useState<string | null>(null);
   const saveGeneration = useRef(0);
+
+  // Load last review date once on mount
+  useEffect(() => {
+    dailyLogRepository.getLastDate(db).then(setLastReviewDate).catch(() => undefined);
+  }, [db]);
 
   useEffect(() => {
     let active = true;
@@ -134,6 +140,12 @@ export default function AgendaScreen() {
     setDate((current) => shiftDate(current, offset));
   }
 
+  async function jumpToLastReview() {
+    if (!lastReviewDate) return;
+    await flushChanges();
+    setDate(lastReviewDate);
+  }
+
   async function closeReview() {
     await flushChanges();
     router.back();
@@ -166,6 +178,20 @@ export default function AgendaScreen() {
         <Text style={[styles.shortDate, { color: theme.textSecondary }]}>{dateLabel}</Text>
         <IconButton icon="chevron-forward" label={t('nextDay')} onPress={() => void changeDate(1)} />
       </View>
+      {lastReviewDate && lastReviewDate !== date ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => void jumpToLastReview()}
+          style={({ pressed }) => [
+            styles.lastReviewBtn,
+            { backgroundColor: theme.accentSurface, borderColor: theme.border, opacity: pressed ? 0.72 : 1 },
+          ]}
+        >
+          <Ionicons color={theme.accentSoft} name="return-up-back-outline" size={15} />
+          <Text style={[styles.lastReviewText, { color: theme.accentSoft }]}>{t('goToLastReview')}</Text>
+          <Text style={[styles.lastReviewDate, { color: theme.textMuted }]}>{lastReviewDate}</Text>
+        </Pressable>
+      ) : null}
 
       {loading ? <LoadingView /> : (
         <>
@@ -223,6 +249,18 @@ const styles = StyleSheet.create({
   stepsLabel: { fontSize: 11, fontWeight: '700', marginLeft: 3 },
   dateNavigation: { alignItems: 'center', flexDirection: 'row', gap: 12 },
   shortDate: { flex: 1, fontSize: 13, fontWeight: '800', textAlign: 'center', textTransform: 'capitalize' },
+  lastReviewBtn: {
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    borderRadius: 14,
+    borderWidth: 1,
+    flexDirection: 'row',
+    gap: 7,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  lastReviewText: { fontSize: 12, fontWeight: '800' },
+  lastReviewDate: { fontSize: 11, fontWeight: '600' },
   stepCard: { gap: 15 },
   stepHeading: { alignItems: 'flex-start', flexDirection: 'row', gap: 12 },
   stepIcon: { alignItems: 'center', borderRadius: 16, height: 48, justifyContent: 'center', width: 48 },

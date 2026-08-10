@@ -95,3 +95,37 @@ export interface CalendarItem {
   completed: boolean;
   color: string;
 }
+
+// ─── Recurrence ──────────────────────────────────────────────────────────────
+
+export type RecurrenceFrequency = 'DAILY' | 'WEEKLY' | 'MONTHLY';
+
+export interface RecurrenceRule {
+  id: string;
+  taskId: string;
+  frequency: RecurrenceFrequency;
+  intervalValue: number;
+  daysOfWeek: number[]; // 0=Sun … 6=Sat, only meaningful for WEEKLY
+  startDate: string;
+  endDate: string | null;
+}
+
+/** Shape used to create or update a rule (no id/taskId needed from the UI) */
+export interface RecurrenceDraft {
+  frequency: RecurrenceFrequency;
+  intervalValue: number;
+  daysOfWeek: number[];
+  endDate: string | null;
+}
+
+/** A single occurrence of a recurring task, joined with its parent task data */
+export interface OccurrenceWithTask {
+  occurrenceId: string;
+  taskId: string;
+  title: string;
+  notes: string | null;
+  priority: number;
+  occurrenceDate: string;
+  frequency: RecurrenceFrequency;
+}
+

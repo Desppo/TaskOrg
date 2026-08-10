@@ -7,9 +7,13 @@ import type {
   DashboardSummary,
   DailyLog,
   InboxItem,
+  OccurrenceWithTask,
   ProjectDestination,
   ProjectDetail,
   ProjectSummary,
+  RecurrenceDraft,
+  RecurrenceFrequency,
+  RecurrenceRule,
   TaskDraft,
   TaskItem,
 } from './types';
@@ -179,6 +183,7 @@ export const taskRepository = {
     const rows = await db.getAllAsync<TaskRow>(
       `${TASK_SELECT}
        WHERE deleted_at IS NULL AND status = 'OPEN' AND due_date <= ?
+         AND id NOT IN (SELECT task_id FROM task_recurrence_rules)
        ORDER BY CASE WHEN due_date < ? THEN 0 ELSE 1 END, priority DESC, created_at ASC`,
       date,
       date,
@@ -190,6 +195,7 @@ export const taskRepository = {
     const rows = await db.getAllAsync<TaskRow>(
       `${TASK_SELECT}
        WHERE deleted_at IS NULL AND status = 'DONE' AND completed_on = ?
+         AND id NOT IN (SELECT task_id FROM task_recurrence_rules)
        ORDER BY updated_at DESC`,
       date,
     );
@@ -201,6 +207,7 @@ export const taskRepository = {
       `${TASK_SELECT}
        WHERE deleted_at IS NULL AND status = 'OPEN'
          AND due_date > ?
+         AND id NOT IN (SELECT task_id FROM task_recurrence_rules)
        ORDER BY due_date ASC, priority DESC, created_at ASC`,
       afterDate,
     );
@@ -212,6 +219,7 @@ export const taskRepository = {
       `${TASK_SELECT}
        WHERE deleted_at IS NULL AND status = 'OPEN'
          AND due_date IS NULL
+         AND id NOT IN (SELECT task_id FROM task_recurrence_rules)
        ORDER BY priority DESC, created_at ASC`,
     );
     return rows.map(mapTask);
@@ -364,6 +372,16 @@ export const dailyLogRepository = {
       timestamp,
       timestamp,
     );
+  },
+
+  async getLastDate(db: SQLiteDatabase): Promise<string | null> {
+    const row = await db.getFirstAsync<{ date: string }>(
+      `SELECT date FROM daily_logs
+       WHERE done_text != '' OR pending_text != '' OR notes != ''
+       ORDER BY date DESC
+       LIMIT 1`,
+    );
+    return row?.date ?? null;
   },
 };
 
@@ -572,5 +590,283 @@ export const dashboardRepository = {
       activeProjectCount: 0,
       archivedCount: 0,
     };
+  },
+};
+
+// ─── Recurrence helpers ───────────────────────────────────────────────────────
+
+function dateToKey(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function keyToDate(value: string): Date {
+  const parts = value.split('-').map(Number);
+  return new Date(parts[0] ?? 1970, (parts[1] ?? 1) - 1, parts[2] ?? 1);
+}
+
+function weekStart(date: Date): Date {
+  const result = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 12);
+  const offset = (result.getDay() + 6) % 7; // Monday-based
+  result.setDate(result.getDate() - offset);
+  return result;
+}
+
+function generateOccurrenceDates(
+  rule: RecurrenceRule,
+  from: string,
+  upTo: string,
+): string[] {
+  const effectiveStart = rule.startDate > from ? rule.startDate : from;
+  const effectiveEnd = rule.endDate && rule.endDate < upTo ? rule.endDate : upTo;
+  if (effectiveStart > effectiveEnd) return [];
+
+  const fromD = keyToDate(effectiveStart);
+  const endD = keyToDate(effectiveEnd);
+  const interval = Math.max(1, rule.intervalValue);
+  const result: string[] = [];
+
+  if (rule.frequency === 'DAILY') {
+    const startD = keyToDate(rule.startDate);
+    const msPerDay = 86_400_000;
+    const totalDays = Math.round((fromD.getTime() - startD.getTime()) / msPerDay);
+    const remainder = ((totalDays % interval) + interval) % interval;
+    const skip = remainder === 0 ? 0 : interval - remainder;
+    const cur = new Date(fromD);
+    cur.setDate(cur.getDate() + skip);
+    while (cur <= endD) {
+      result.push(dateToKey(cur));
+      cur.setDate(cur.getDate() + interval);
+    }
+  } else if (rule.frequency === 'WEEKLY') {
+    const startD = keyToDate(rule.startDate);
+    const anchorWeek = weekStart(startD);
+    const days = rule.daysOfWeek.length > 0 ? rule.daysOfWeek : [startD.getDay()];
+    const cur = new Date(fromD);
+    while (cur <= endD) {
+      const dow = cur.getDay();
+      if (days.includes(dow)) {
+        const curWeek = weekStart(cur);
+        const diff = Math.round((curWeek.getTime() - anchorWeek.getTime()) / (7 * 86_400_000));
+        if (diff >= 0 && diff % interval === 0) result.push(dateToKey(cur));
+      }
+      cur.setDate(cur.getDate() + 1);
+    }
+  } else {
+    // MONTHLY
+    const startD = keyToDate(rule.startDate);
+    const dom = startD.getDate();
+    let yr = startD.getFullYear();
+    let mo = startD.getMonth();
+    // Fast-forward to first month that produces a date >= fromD
+    while (true) {
+      const days = new Date(yr, mo + 1, 0).getDate();
+      const candidate = new Date(yr, mo, Math.min(dom, days));
+      if (candidate >= fromD) break;
+      mo += interval;
+      yr += Math.floor(mo / 12);
+      mo = ((mo % 12) + 12) % 12;
+    }
+    while (true) {
+      const days = new Date(yr, mo + 1, 0).getDate();
+      const candidate = new Date(yr, mo, Math.min(dom, days));
+      if (candidate > endD) break;
+      const key = dateToKey(candidate);
+      if (key >= effectiveStart) result.push(key);
+      mo += interval;
+      yr += Math.floor(mo / 12);
+      mo = ((mo % 12) + 12) % 12;
+    }
+  }
+
+  return result;
+}
+
+interface RecurrenceRuleRow {
+  id: string;
+  task_id: string;
+  frequency: string;
+  interval_value: number;
+  days_of_week: string;
+  start_date: string;
+  end_date: string | null;
+}
+
+function mapRule(row: RecurrenceRuleRow): RecurrenceRule {
+  return {
+    id: row.id,
+    taskId: row.task_id,
+    frequency: row.frequency as RecurrenceFrequency,
+    intervalValue: row.interval_value,
+    daysOfWeek: JSON.parse(row.days_of_week) as number[],
+    startDate: row.start_date,
+    endDate: row.end_date,
+  };
+}
+
+const HORIZON_DAYS = 90;
+
+export const recurrenceRepository = {
+  async getRule(db: SQLiteDatabase, taskId: string): Promise<RecurrenceRule | null> {
+    const row = await db.getFirstAsync<RecurrenceRuleRow>(
+      'SELECT * FROM task_recurrence_rules WHERE task_id = ?',
+      taskId,
+    );
+    return row ? mapRule(row) : null;
+  },
+
+  async saveRule(
+    db: SQLiteDatabase,
+    taskId: string,
+    draft: RecurrenceDraft,
+    startDate: string,
+  ): Promise<void> {
+    const timestamp = now();
+    await db.runAsync(
+      `INSERT INTO task_recurrence_rules
+        (id, task_id, frequency, interval_value, days_of_week, start_date, end_date, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(task_id) DO UPDATE SET
+         frequency      = excluded.frequency,
+         interval_value = excluded.interval_value,
+         days_of_week   = excluded.days_of_week,
+         start_date     = excluded.start_date,
+         end_date       = excluded.end_date,
+         updated_at     = excluded.updated_at`,
+      Crypto.randomUUID(),
+      taskId,
+      draft.frequency,
+      draft.intervalValue,
+      JSON.stringify(draft.daysOfWeek),
+      startDate,
+      draft.endDate,
+      timestamp,
+      timestamp,
+    );
+  },
+
+  async deleteRule(db: SQLiteDatabase, taskId: string): Promise<void> {
+    // task_occurrences cascade-deletes via FK
+    await db.runAsync('DELETE FROM task_recurrence_rules WHERE task_id = ?', taskId);
+  },
+
+  /** Generate occurrences for a single rule from `from` to `from + HORIZON_DAYS`. */
+  async generateForRule(db: SQLiteDatabase, rule: RecurrenceRule, from: string): Promise<void> {
+    const upToD = keyToDate(from);
+    upToD.setDate(upToD.getDate() + HORIZON_DAYS);
+    const upTo = dateToKey(upToD);
+    const dates = generateOccurrenceDates(rule, from, upTo);
+    const timestamp = now();
+    for (const d of dates) {
+      await db.runAsync(
+        `INSERT OR IGNORE INTO task_occurrences
+          (id, task_id, occurrence_date, skipped, created_at, updated_at)
+         VALUES (?, ?, ?, 0, ?, ?)`,
+        Crypto.randomUUID(),
+        rule.taskId,
+        d,
+        timestamp,
+        timestamp,
+      );
+    }
+  },
+
+  /** Generate occurrences for ALL active rules, called on Tasks screen mount. */
+  async generateAll(db: SQLiteDatabase, today: string): Promise<void> {
+    const rows = await db.getAllAsync<RecurrenceRuleRow>(
+      `SELECT r.* FROM task_recurrence_rules r
+       JOIN tasks t ON t.id = r.task_id
+       WHERE t.deleted_at IS NULL AND t.status = 'OPEN'`,
+    );
+    for (const row of rows) {
+      const rule = mapRule(row);
+      if (rule.endDate && rule.endDate < today) continue;
+      await recurrenceRepository.generateForRule(db, rule, today);
+    }
+  },
+
+  /**
+   * Latest pending occurrence per task with occurrence_date <= today.
+   * (Handles overdue recurring tasks — shows only the most recent pending one.)
+   */
+  async listTodayOccurrences(
+    db: SQLiteDatabase,
+    date: string,
+  ): Promise<OccurrenceWithTask[]> {
+    return db.getAllAsync<OccurrenceWithTask>(
+      `SELECT o.id AS occurrenceId, o.task_id AS taskId, o.occurrence_date AS occurrenceDate,
+              t.title, t.notes, t.priority, r.frequency
+       FROM task_occurrences o
+       JOIN tasks t ON t.id = o.task_id AND t.deleted_at IS NULL AND t.status = 'OPEN'
+       JOIN task_recurrence_rules r ON r.task_id = o.task_id
+       WHERE o.occurrence_date <= ?
+         AND o.completed_on IS NULL
+         AND o.skipped = 0
+         AND o.occurrence_date = (
+           SELECT MAX(o2.occurrence_date)
+           FROM task_occurrences o2
+           WHERE o2.task_id = o.task_id
+             AND o2.occurrence_date <= ?
+             AND o2.completed_on IS NULL
+             AND o2.skipped = 0
+         )
+       ORDER BY t.priority DESC, o.occurrence_date ASC`,
+      date,
+      date,
+    );
+  },
+
+  /**
+   * Next pending occurrence per task with occurrence_date > today.
+   * Only the earliest future occurrence per recurring task.
+   */
+  async listNextOccurrences(
+    db: SQLiteDatabase,
+    date: string,
+  ): Promise<OccurrenceWithTask[]> {
+    return db.getAllAsync<OccurrenceWithTask>(
+      `SELECT o.id AS occurrenceId, o.task_id AS taskId, o.occurrence_date AS occurrenceDate,
+              t.title, t.notes, t.priority, r.frequency
+       FROM task_occurrences o
+       JOIN tasks t ON t.id = o.task_id AND t.deleted_at IS NULL AND t.status = 'OPEN'
+       JOIN task_recurrence_rules r ON r.task_id = o.task_id
+       WHERE o.occurrence_date > ?
+         AND o.completed_on IS NULL
+         AND o.skipped = 0
+         AND o.occurrence_date = (
+           SELECT MIN(o2.occurrence_date)
+           FROM task_occurrences o2
+           WHERE o2.task_id = o.task_id
+             AND o2.occurrence_date > ?
+             AND o2.completed_on IS NULL
+             AND o2.skipped = 0
+         )
+       ORDER BY o.occurrence_date ASC, t.priority DESC`,
+      date,
+      date,
+    );
+  },
+
+  async completeOccurrence(
+    db: SQLiteDatabase,
+    occurrenceId: string,
+    date: string,
+  ): Promise<void> {
+    await db.runAsync(
+      'UPDATE task_occurrences SET completed_on = ?, updated_at = ? WHERE id = ?',
+      date,
+      now(),
+      occurrenceId,
+    );
+  },
+
+  async uncompleteOccurrence(db: SQLiteDatabase, occurrenceId: string): Promise<void> {
+    await db.runAsync(
+      'UPDATE task_occurrences SET completed_on = NULL, updated_at = ? WHERE id = ?',
+      now(),
+      occurrenceId,
+    );
   },
 };
