@@ -7,6 +7,7 @@ import type {
   DashboardSummary,
   DailyLog,
   InboxItem,
+  Milestone,
   OccurrenceWithTask,
   ProjectDestination,
   ProjectDetail,
@@ -50,6 +51,9 @@ interface ProjectRow {
   name: string;
   description: string | null;
   color: string;
+  icon: string;
+  pinned: number;
+  archived_at: string | null;
 }
 
 interface ProjectColumnRow {
@@ -386,17 +390,19 @@ export const dailyLogRepository = {
 };
 
 export const projectRepository = {
-  async list(db: SQLiteDatabase): Promise<ProjectSummary[]> {
+  async list(db: SQLiteDatabase, archived = false): Promise<ProjectSummary[]> {
     return db.getAllAsync<ProjectSummary>(
-      `SELECT p.id, p.name, p.description, p.color, p.created_at AS createdAt,
+      `SELECT p.id, p.name, p.description, p.color, p.icon, p.pinned,
+              p.archived_at AS archivedAt, p.created_at AS createdAt,
               COUNT(DISTINCT CASE WHEN t.status = 'OPEN' AND t.deleted_at IS NULL THEN t.id END) AS openTasks,
+              COUNT(DISTINCT CASE WHEN t.deleted_at IS NULL AND t.status != 'ARCHIVED' THEN t.id END) AS totalTasks,
               COUNT(DISTINCT CASE WHEN c.deleted_at IS NULL THEN c.id END) AS columnCount
        FROM projects p
        LEFT JOIN tasks t ON t.project_id = p.id
        LEFT JOIN project_columns c ON c.project_id = p.id
-       WHERE p.deleted_at IS NULL
+       WHERE p.deleted_at IS NULL AND ${archived ? 'p.archived_at IS NOT NULL' : 'p.archived_at IS NULL'}
        GROUP BY p.id
-       ORDER BY p.position, p.created_at DESC`,
+       ORDER BY p.pinned DESC, p.position, p.created_at DESC`,
     );
   },
 
@@ -449,9 +455,47 @@ export const projectRepository = {
     });
   },
 
+  async togglePin(db: SQLiteDatabase, id: string): Promise<void> {
+    await db.runAsync(
+      'UPDATE projects SET pinned = CASE WHEN pinned = 0 THEN 1 ELSE 0 END, updated_at = ? WHERE id = ?',
+      now(), id,
+    );
+  },
+
+  async archive(db: SQLiteDatabase, id: string): Promise<void> {
+    await db.runAsync(
+      'UPDATE projects SET archived_at = ?, pinned = 0, updated_at = ? WHERE id = ?',
+      now(), now(), id,
+    );
+  },
+
+  async unarchive(db: SQLiteDatabase, id: string): Promise<void> {
+    await db.runAsync(
+      'UPDATE projects SET archived_at = NULL, updated_at = ? WHERE id = ?',
+      now(), id,
+    );
+  },
+
+  async updateMetadata(
+    db: SQLiteDatabase,
+    id: string,
+    meta: { color?: string; icon?: string; description?: string | null },
+  ): Promise<void> {
+    const timestamp = now();
+    if (meta.color !== undefined) {
+      await db.runAsync('UPDATE projects SET color = ?, updated_at = ? WHERE id = ?', meta.color, timestamp, id);
+    }
+    if (meta.icon !== undefined) {
+      await db.runAsync('UPDATE projects SET icon = ?, updated_at = ? WHERE id = ?', meta.icon, timestamp, id);
+    }
+    if (meta.description !== undefined) {
+      await db.runAsync('UPDATE projects SET description = ?, updated_at = ? WHERE id = ?', meta.description ?? null, timestamp, id);
+    }
+  },
+
   async getById(db: SQLiteDatabase, id: string): Promise<ProjectDetail | null> {
     const project = await db.getFirstAsync<ProjectRow>(
-      `SELECT id, name, description, color
+      `SELECT id, name, description, color, icon
        FROM projects
        WHERE id = ? AND deleted_at IS NULL`,
       id,
@@ -481,6 +525,7 @@ export const projectRepository = {
         ...column,
         tasks: tasks.filter((task) => task.columnId === column.id),
       })),
+      allTasks: tasks,
     };
   },
 
@@ -519,7 +564,65 @@ export const projectRepository = {
   },
 };
 
+// ─── Milestone helpers ────────────────────────────────────────────────────────
+
+interface MilestoneRow {
+  id: string;
+  project_id: string;
+  title: string;
+  target_date: string | null;
+  completed: number;
+  created_at: string;
+}
+
+function mapMilestone(row: MilestoneRow): Milestone {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    title: row.title,
+    targetDate: row.target_date,
+    completed: row.completed === 1,
+    createdAt: row.created_at,
+  };
+}
+
+export const milestoneRepository = {
+  async list(db: SQLiteDatabase, projectId: string): Promise<Milestone[]> {
+    const rows = await db.getAllAsync<MilestoneRow>(
+      'SELECT id, project_id, title, target_date, completed, created_at FROM project_milestones WHERE project_id = ? ORDER BY created_at',
+      projectId,
+    );
+    return rows.map(mapMilestone);
+  },
+
+  async create(db: SQLiteDatabase, projectId: string, title: string, targetDate: string | null = null): Promise<void> {
+    const timestamp = now();
+    await db.runAsync(
+      'INSERT INTO project_milestones (id, project_id, title, target_date, completed, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)',
+      Crypto.randomUUID(),
+      projectId,
+      title.trim(),
+      targetDate,
+      timestamp,
+      timestamp,
+    );
+  },
+
+  async toggle(db: SQLiteDatabase, id: string): Promise<void> {
+    await db.runAsync(
+      'UPDATE project_milestones SET completed = CASE WHEN completed = 0 THEN 1 ELSE 0 END, updated_at = ? WHERE id = ?',
+      now(),
+      id,
+    );
+  },
+
+  async remove(db: SQLiteDatabase, id: string): Promise<void> {
+    await db.runAsync('DELETE FROM project_milestones WHERE id = ?', id);
+  },
+};
+
 export const calendarRepository = {
+
   async listRange(db: SQLiteDatabase, startDate: string, endDate: string): Promise<CalendarItem[]> {
     const tasks = await db.getAllAsync<CalendarItem>(
       `SELECT id, 'task' AS kind, title, due_date AS date,
@@ -574,7 +677,7 @@ export const dashboardRepository = {
          WHERE deleted_at IS NULL AND status = 'OPEN' AND due_date IS NULL) AS unscheduledCount,
         (SELECT COUNT(*) FROM tasks
          WHERE deleted_at IS NULL AND status = 'DONE' AND completed_on = ?) AS completedTodayCount,
-        (SELECT COUNT(*) FROM projects WHERE deleted_at IS NULL) AS activeProjectCount,
+        (SELECT COUNT(*) FROM projects WHERE deleted_at IS NULL AND archived_at IS NULL) AS activeProjectCount,
         (SELECT COUNT(*) FROM tasks
          WHERE deleted_at IS NULL AND status = 'ARCHIVED') AS archivedCount`,
       date,
@@ -796,7 +899,7 @@ export const recurrenceRepository = {
     date: string,
   ): Promise<OccurrenceWithTask[]> {
     return db.getAllAsync<OccurrenceWithTask>(
-      `SELECT o.id AS occurrenceId, o.task_id AS taskId, o.occurrence_date AS occurrenceDate,
+      `SELECT o.id AS occurrenceId, o.task_id AS taskId, MAX(o.occurrence_date) AS occurrenceDate,
               t.title, t.notes, t.priority, r.frequency
        FROM task_occurrences o
        JOIN tasks t ON t.id = o.task_id AND t.deleted_at IS NULL AND t.status = 'OPEN'
@@ -804,16 +907,8 @@ export const recurrenceRepository = {
        WHERE o.occurrence_date <= ?
          AND o.completed_on IS NULL
          AND o.skipped = 0
-         AND o.occurrence_date = (
-           SELECT MAX(o2.occurrence_date)
-           FROM task_occurrences o2
-           WHERE o2.task_id = o.task_id
-             AND o2.occurrence_date <= ?
-             AND o2.completed_on IS NULL
-             AND o2.skipped = 0
-         )
-       ORDER BY t.priority DESC, o.occurrence_date ASC`,
-      date,
+       GROUP BY o.task_id
+       ORDER BY t.priority DESC, occurrenceDate ASC`,
       date,
     );
   },
@@ -827,7 +922,7 @@ export const recurrenceRepository = {
     date: string,
   ): Promise<OccurrenceWithTask[]> {
     return db.getAllAsync<OccurrenceWithTask>(
-      `SELECT o.id AS occurrenceId, o.task_id AS taskId, o.occurrence_date AS occurrenceDate,
+      `SELECT o.id AS occurrenceId, o.task_id AS taskId, MIN(o.occurrence_date) AS occurrenceDate,
               t.title, t.notes, t.priority, r.frequency
        FROM task_occurrences o
        JOIN tasks t ON t.id = o.task_id AND t.deleted_at IS NULL AND t.status = 'OPEN'
@@ -835,16 +930,8 @@ export const recurrenceRepository = {
        WHERE o.occurrence_date > ?
          AND o.completed_on IS NULL
          AND o.skipped = 0
-         AND o.occurrence_date = (
-           SELECT MIN(o2.occurrence_date)
-           FROM task_occurrences o2
-           WHERE o2.task_id = o.task_id
-             AND o2.occurrence_date > ?
-             AND o2.completed_on IS NULL
-             AND o2.skipped = 0
-         )
-       ORDER BY o.occurrence_date ASC, t.priority DESC`,
-      date,
+       GROUP BY o.task_id
+       ORDER BY occurrenceDate ASC, t.priority DESC`,
       date,
     );
   },

@@ -3,7 +3,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 export const DATABASE_NAME = 'taskorg.db';
 export const GENERAL_AREA_ID = '00000000-0000-4000-8000-000000000001';
 
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 
 export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
   await db.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
@@ -153,6 +153,34 @@ export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
       await transaction.runAsync('DELETE FROM inbox_items WHERE deleted_at IS NOT NULL');
     });
     currentVersion = 2;
+  }
+
+  if (currentVersion === 2) {
+    await db.withExclusiveTransactionAsync(async (transaction) => {
+      // Add project customization + archiving columns
+      await transaction.runAsync('ALTER TABLE projects ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0');
+      await transaction.runAsync('ALTER TABLE projects ADD COLUMN archived_at TEXT');
+      await transaction.runAsync("ALTER TABLE projects ADD COLUMN icon TEXT NOT NULL DEFAULT 'folder'");
+      // Create milestones table
+      await transaction.execAsync(`
+        CREATE TABLE project_milestones (
+          id TEXT PRIMARY KEY NOT NULL,
+          project_id TEXT NOT NULL,
+          title TEXT NOT NULL,
+          target_date TEXT,
+          completed INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        );
+        CREATE INDEX idx_milestones_project ON project_milestones(project_id);
+      `);
+      // Add milestone association to tasks
+      await transaction.runAsync(
+        'ALTER TABLE tasks ADD COLUMN milestone_id TEXT REFERENCES project_milestones(id) ON DELETE SET NULL',
+      );
+    });
+    currentVersion = 3;
   }
 
   if (currentVersion !== DATABASE_VERSION) {

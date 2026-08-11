@@ -6,9 +6,10 @@ type BackupRow = Record<string, BackupValue>;
 
 const TABLES = {
   areas: ['id', 'name', 'color', 'is_default', 'created_at', 'updated_at', 'deleted_at'],
-  projects: ['id', 'area_id', 'name', 'description', 'color', 'position', 'created_at', 'updated_at', 'deleted_at'],
+  projects: ['id', 'area_id', 'name', 'description', 'color', 'position', 'pinned', 'archived_at', 'icon', 'created_at', 'updated_at', 'deleted_at'],
   project_columns: ['id', 'project_id', 'name', 'position', 'created_at', 'updated_at', 'deleted_at'],
-  tasks: ['id', 'area_id', 'project_id', 'column_id', 'title', 'notes', 'due_date', 'priority', 'status', 'completed_on', 'position', 'created_at', 'updated_at', 'deleted_at'],
+  project_milestones: ['id', 'project_id', 'title', 'target_date', 'completed', 'created_at', 'updated_at'],
+  tasks: ['id', 'area_id', 'project_id', 'column_id', 'milestone_id', 'title', 'notes', 'due_date', 'priority', 'status', 'completed_on', 'position', 'created_at', 'updated_at', 'deleted_at'],
   task_recurrence_rules: ['id', 'task_id', 'frequency', 'interval_value', 'days_of_week', 'start_date', 'end_date', 'created_at', 'updated_at'],
   task_occurrences: ['id', 'task_id', 'occurrence_date', 'completed_on', 'skipped', 'created_at', 'updated_at'],
   events: ['id', 'area_id', 'title', 'description', 'start_at', 'end_at', 'all_day', 'color', 'created_at', 'updated_at', 'deleted_at'],
@@ -73,13 +74,24 @@ function parseBackup(content: string): BackupFile {
   const tables = {} as Record<TableName, BackupRow[]>;
   for (const table of INSERT_ORDER) {
     const rows = candidate.tables[table];
-    if (!Array.isArray(rows)) throw new Error(`Missing table: ${table}`);
+    if (!Array.isArray(rows)) {
+      // New table not present in older backups — use empty array
+      if (table === 'project_milestones') { tables[table] = []; continue; }
+      throw new Error(`Missing table: ${table}`);
+    }
     tables[table] = rows.map((input) => {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error(`Invalid row: ${table}`);
       const row = input as Record<string, unknown>;
       const normalized: BackupRow = {};
       for (const column of TABLES[table]) {
         const value = row[column];
+        if (value === undefined) {
+          // Legacy backup missing new optional columns — provide safe defaults
+          const DEFAULTS: Record<string, BackupValue> = { pinned: 0, icon: 'folder', archived_at: null, milestone_id: null };
+          normalized[column] = (column in DEFAULTS ? DEFAULTS[column] : null) ?? null;
+          continue;
+        }
+
         if (value !== null && typeof value !== 'string' && typeof value !== 'number') throw new Error(`Invalid value: ${table}.${column}`);
         normalized[column] = value;
       }

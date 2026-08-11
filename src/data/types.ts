@@ -55,7 +55,11 @@ export interface ProjectSummary {
   name: string;
   description: string | null;
   color: string;
+  icon: string;
+  pinned: number;       // 0 | 1
+  archivedAt: string | null;
   openTasks: number;
+  totalTasks: number;
   columnCount: number;
   createdAt: string;
 }
@@ -72,7 +76,18 @@ export interface ProjectDetail {
   name: string;
   description: string | null;
   color: string;
+  icon: string;
   columns: ProjectColumn[];
+  allTasks: TaskItem[];
+}
+
+export interface Milestone {
+  id: string;
+  projectId: string;
+  title: string;
+  targetDate: string | null;
+  completed: boolean;
+  createdAt: string;
 }
 
 export interface ProjectColumnDestination {
