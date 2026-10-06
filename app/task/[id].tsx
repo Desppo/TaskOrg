@@ -10,6 +10,7 @@ import { useDataVersion } from '@/providers/data-version-provider';
 import { useLanguage } from '@/providers/language-provider';
 import { useAppTheme } from '@/theme/theme';
 import { isValidDateKey, toDateKey } from '@/utils/date';
+import { recurrenceEndDate } from '@/utils/recurrence';
 
 export default function TaskEditorScreen() {
   const { id } = useLocalSearchParams<{ id: string | string[] }>();
@@ -28,6 +29,7 @@ export default function TaskEditorScreen() {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [columnId, setColumnId] = useState<string | null>(null);
   const [recurrenceDraft, setRecurrenceDraft] = useState<RecurrenceDraft | null>(null);
+  const [recurrenceStartDate, setRecurrenceStartDate] = useState<string | null>(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -57,11 +59,14 @@ export default function TaskEditorScreen() {
           setColumnId(nextTask.columnId);
         }
         if (nextRule) {
+          setRecurrenceStartDate(nextRule.startDate);
           setRecurrenceDraft({
             frequency: nextRule.frequency,
             intervalValue: nextRule.intervalValue,
             daysOfWeek: nextRule.daysOfWeek,
             endDate: nextRule.endDate,
+            endType: nextRule.endType,
+            endValue: nextRule.endValue,
           });
         }
       })
@@ -77,15 +82,20 @@ export default function TaskEditorScreen() {
   }
 
   async function saveTask() {
-    if (!task || !title.trim()) return;
+    if (!task || !title.trim() || saving) return;
     const cleanDate = dueDate.trim();
     if (cleanDate && !isValidDateKey(cleanDate)) {
       setError(t('invalidDate'));
       return;
     }
-    if (recurrenceDraft?.endDate && !isValidDateKey(recurrenceDraft.endDate)) {
-      setError(t('invalidDate'));
-      return;
+    const startDate = recurrenceStartDate ?? (cleanDate || today);
+    if (recurrenceDraft) {
+      try {
+        recurrenceEndDate(recurrenceDraft, startDate);
+      } catch {
+        setError(t('invalidRecurrence'));
+        return;
+      }
     }
     const selectedProject = projects.find((project) => project.id === projectId);
     const selectedColumnIndex = selectedProject?.columns.findIndex((column) => column.id === columnId) ?? -1;
@@ -102,31 +112,33 @@ export default function TaskEditorScreen() {
 
     setSaving(true);
     try {
-      await taskRepository.update(
-        db,
-        task.id,
-        {
-          title,
-          notes: notes.trim() || null,
-          dueDate: cleanDate || null,
-          priority,
-          projectId,
-          columnId: projectId ? columnId : null,
-        },
-        nextStatus,
-        nextCompletedOn,
-      );
+      await db.withExclusiveTransactionAsync(async (transaction) => {
+        await taskRepository.update(
+          transaction,
+          task.id,
+          {
+            title,
+            notes: notes.trim() || null,
+            dueDate: cleanDate || null,
+            priority,
+            projectId,
+            columnId: projectId ? columnId : null,
+            milestoneId: projectId === task.projectId ? task.milestoneId : null,
+          },
+          nextStatus,
+          nextCompletedOn,
+        );
 
-      // Save or delete recurrence rule
-      if (recurrenceDraft) {
-        const startDate = cleanDate || today;
-        await recurrenceRepository.saveRule(db, task.id, recurrenceDraft, startDate);
-        // Generate occurrences immediately so they show up in Tasks
-        const rule = await recurrenceRepository.getRule(db, task.id);
-        if (rule) await recurrenceRepository.generateForRule(db, rule, today);
-      } else {
-        await recurrenceRepository.deleteRule(db, task.id);
-      }
+        // Save or delete recurrence rule
+        if (recurrenceDraft) {
+          await recurrenceRepository.saveRule(transaction, task.id, recurrenceDraft, startDate);
+          // Generate occurrences immediately so they show up in Tasks
+          const rule = await recurrenceRepository.getRule(transaction, task.id);
+          if (rule) await recurrenceRepository.generateForRule(transaction, rule, today);
+        } else {
+          await recurrenceRepository.deleteRule(transaction, task.id);
+        }
+      });
 
       refresh();
       router.back();

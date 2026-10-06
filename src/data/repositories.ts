@@ -1,6 +1,7 @@
 import * as Crypto from 'expo-crypto';
 import type { SQLiteDatabase } from 'expo-sqlite';
 import { GENERAL_AREA_ID } from './database';
+import { recurrenceEndDate } from '../utils/recurrence';
 import type {
   ArchivedTask,
   CalendarItem,
@@ -35,6 +36,7 @@ interface TaskRow {
   completed_on: string | null;
   project_id: string | null;
   column_id: string | null;
+  milestone_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -77,6 +79,7 @@ function mapTask(row: TaskRow): TaskItem {
     completedOn: row.completed_on,
     projectId: row.project_id,
     columnId: row.column_id,
+    milestoneId: row.milestone_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -84,7 +87,7 @@ function mapTask(row: TaskRow): TaskItem {
 
 const TASK_SELECT = `
   SELECT id, title, notes, due_date, priority, status, completed_on,
-         project_id, column_id, created_at, updated_at
+         project_id, column_id, milestone_id, created_at, updated_at
   FROM tasks
 `;
 
@@ -152,12 +155,13 @@ export const inboxRepository = {
       const timestamp = now();
       await transaction.runAsync(
         `INSERT INTO tasks
-          (id, area_id, project_id, column_id, title, notes, due_date, priority, status, completed_on, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, area_id, project_id, column_id, milestone_id, title, notes, due_date, priority, status, completed_on, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         taskId,
         GENERAL_AREA_ID,
         draft.projectId,
         draft.columnId,
+        draft.milestoneId,
         draft.title.trim(),
         draft.notes,
         draft.dueDate,
@@ -282,7 +286,7 @@ export const taskRepository = {
   ): Promise<void> {
     await db.runAsync(
       `UPDATE tasks
-       SET title = ?, notes = ?, due_date = ?, priority = ?, project_id = ?, column_id = ?,
+       SET title = ?, notes = ?, due_date = ?, priority = ?, project_id = ?, column_id = ?, milestone_id = ?,
            status = ?, completed_on = ?, updated_at = ?
        WHERE id = ? AND deleted_at IS NULL`,
       draft.title.trim(),
@@ -291,8 +295,18 @@ export const taskRepository = {
       draft.priority,
       draft.projectId,
       draft.columnId,
+      draft.milestoneId,
       status,
       completedOn,
+      now(),
+      id,
+    );
+  },
+
+  async setMilestone(db: SQLiteDatabase, id: string, milestoneId: string | null): Promise<void> {
+    await db.runAsync(
+      'UPDATE tasks SET milestone_id = ?, updated_at = ? WHERE id = ?',
+      milestoneId,
       now(),
       id,
     );
@@ -425,17 +439,19 @@ export const projectRepository = {
     }));
   },
 
-  async create(db: SQLiteDatabase, name: string, columnNames: readonly string[]): Promise<void> {
+  async create(db: SQLiteDatabase, name: string, columnNames: readonly string[], appearance: { color?: string; icon?: string } = {}): Promise<void> {
     await db.withExclusiveTransactionAsync(async (transaction) => {
       const timestamp = now();
       const projectId = Crypto.randomUUID();
       await transaction.runAsync(
         `INSERT INTO projects
-          (id, area_id, name, color, created_at, updated_at)
-         VALUES (?, ?, ?, '#6366F1', ?, ?)`,
+          (id, area_id, name, color, icon, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
         projectId,
         GENERAL_AREA_ID,
         name.trim(),
+        appearance.color ?? '#6366F1',
+        appearance.icon ?? 'folder',
         timestamp,
         timestamp,
       );
@@ -795,6 +811,8 @@ interface RecurrenceRuleRow {
   days_of_week: string;
   start_date: string;
   end_date: string | null;
+  end_type: 'none' | 'date' | 'duration';
+  end_value: string | null;
 }
 
 function mapRule(row: RecurrenceRuleRow): RecurrenceRule {
@@ -806,6 +824,8 @@ function mapRule(row: RecurrenceRuleRow): RecurrenceRule {
     daysOfWeek: JSON.parse(row.days_of_week) as number[],
     startDate: row.start_date,
     endDate: row.end_date,
+    endType: row.end_type === 'date' && !row.end_date ? 'none' : row.end_type,
+    endValue: row.end_value,
   };
 }
 
@@ -827,16 +847,20 @@ export const recurrenceRepository = {
     startDate: string,
   ): Promise<void> {
     const timestamp = now();
+    const computedEndDate = recurrenceEndDate(draft, startDate);
+
     await db.runAsync(
       `INSERT INTO task_recurrence_rules
-        (id, task_id, frequency, interval_value, days_of_week, start_date, end_date, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (id, task_id, frequency, interval_value, days_of_week, start_date, end_date, end_type, end_value, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(task_id) DO UPDATE SET
          frequency      = excluded.frequency,
          interval_value = excluded.interval_value,
          days_of_week   = excluded.days_of_week,
          start_date     = excluded.start_date,
          end_date       = excluded.end_date,
+         end_type       = excluded.end_type,
+         end_value      = excluded.end_value,
          updated_at     = excluded.updated_at`,
       Crypto.randomUUID(),
       taskId,
@@ -844,14 +868,25 @@ export const recurrenceRepository = {
       draft.intervalValue,
       JSON.stringify(draft.daysOfWeek),
       startDate,
-      draft.endDate,
+      computedEndDate,
+      draft.endType,
+      draft.endType === 'date' ? computedEndDate : draft.endValue,
       timestamp,
       timestamp,
+    );
+    // Regenerate future pending dates after an edit; keep completed history.
+    await db.runAsync(
+      'DELETE FROM task_occurrences WHERE task_id = ? AND completed_on IS NULL AND occurrence_date >= ?',
+      taskId,
+      dateToKey(new Date()),
     );
   },
 
   async deleteRule(db: SQLiteDatabase, taskId: string): Promise<void> {
-    // task_occurrences cascade-deletes via FK
+    // Occurrences reference the task, so removing its rule needs explicit cleanup.
+    await db.runAsync(
+      'DELETE FROM task_occurrences WHERE task_id = ? AND completed_on IS NULL', taskId,
+    );
     await db.runAsync('DELETE FROM task_recurrence_rules WHERE task_id = ?', taskId);
   },
 

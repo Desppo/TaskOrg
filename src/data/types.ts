@@ -16,6 +16,7 @@ export interface TaskItem {
   completedOn: string | null;
   projectId: string | null;
   columnId: string | null;
+  milestoneId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -27,6 +28,7 @@ export interface TaskDraft {
   priority: Priority;
   projectId: string | null;
   columnId: string | null;
+  milestoneId: string | null;
 }
 
 export interface ArchivedTask extends TaskItem {
@@ -123,6 +125,8 @@ export interface RecurrenceRule {
   daysOfWeek: number[]; // 0=Sun … 6=Sat, only meaningful for WEEKLY
   startDate: string;
   endDate: string | null;
+  endType: 'none' | 'date' | 'duration';
+  endValue: string | null; // e.g. '2026-08-11' for date, '5' for duration
 }
 
 /** Shape used to create or update a rule (no id/taskId needed from the UI) */
@@ -131,6 +135,8 @@ export interface RecurrenceDraft {
   intervalValue: number;
   daysOfWeek: number[];
   endDate: string | null;
+  endType: 'none' | 'date' | 'duration';
+  endValue: string | null;
 }
 
 /** A single occurrence of a recurring task, joined with its parent task data */

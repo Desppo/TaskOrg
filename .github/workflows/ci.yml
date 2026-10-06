@@ -25,7 +25,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -34,10 +34,13 @@ jobs:
       - name: Check TypeScript
         run: npm run type-check
 
+      - name: Check database migrations and backup transfer
+        run: npm test
+
       - name: Validate Expo project
         run: npx expo-doctor
 
-      - name: Export Android bundle
+      - name: Export iOS and Android bundles
         run: npm run build
 
       - name: Audit production dependencies

@@ -79,6 +79,7 @@ export default function InboxProcessorScreen() {
           priority,
           projectId,
           columnId: projectId ? columnId : null,
+          milestoneId: null,
         },
         isLastColumn ? 'DONE' : 'OPEN',
         isLastColumn ? today : null,

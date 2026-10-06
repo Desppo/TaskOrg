@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { ActionButton, AppInput, BackButton, Card, IconButton, LoadingView, Screen, ScreenHeader } from '@/components/ui';
 import { dailyLogRepository, taskRepository } from '@/data/repositories';
+import { flushPendingWrites, queueWrite } from '@/data/pending-writes';
 import type { DailyLog, TaskItem } from '@/data/types';
 import { useDataVersion } from '@/providers/data-version-provider';
 import { useLanguage } from '@/providers/language-provider';
@@ -69,6 +70,7 @@ export default function AgendaScreen() {
   const { version } = useDataVersion();
   const [date, setDate] = useState(toDateKey(new Date()));
   const [log, setLog] = useState<DailyLog>({ date, doneText: '', pendingText: '', notes: '' });
+  const logRef = useRef(log);
   const [completed, setCompleted] = useState<TaskItem[]>([]);
   const [pending, setPending] = useState<TaskItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -86,68 +88,60 @@ export default function AgendaScreen() {
     saveGeneration.current += 1;
     setLoading(true);
     setSaveState('idle');
-    Promise.all([
+    flushPendingWrites(db).then(() => Promise.all([
       dailyLogRepository.get(db, date),
       taskRepository.listCompleted(db, date),
       taskRepository.listToday(db, date),
-    ]).then(([nextLog, nextCompleted, nextPending]) => {
+    ])).then(([nextLog, nextCompleted, nextPending]) => {
       if (active) {
         setLog(nextLog);
+        logRef.current = nextLog;
         setCompleted(nextCompleted);
         setPending(nextPending);
       }
-    }).finally(() => { if (active) setLoading(false); });
+    }).catch(() => { if (active) Alert.alert(t('agendaTitle'), t('errorGeneric')); })
+      .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [date, db, version]);
 
-  useEffect(() => {
-    if (saveState !== 'dirty') return undefined;
-    const snapshot = log;
-    const timer = setTimeout(() => {
-      const generation = ++saveGeneration.current;
-      setSaveState('saving');
-      dailyLogRepository.save(db, snapshot)
-        .then(() => { if (generation === saveGeneration.current) setSaveState('saved'); })
-        .catch(() => { if (generation === saveGeneration.current) setSaveState('error'); });
-    }, 700);
-    return () => clearTimeout(timer);
-  }, [db, log, saveState]);
-
   function updateField(field: LogField, value: string) {
-    // Invalidate any save already in flight so it cannot mark newer text as saved.
-    saveGeneration.current += 1;
-    setLog((current) => ({ ...current, [field]: value }));
-    setSaveState('dirty');
+    const snapshot = { ...logRef.current, [field]: value };
+    logRef.current = snapshot;
+    setLog(snapshot);
+    void saveSnapshot(snapshot);
   }
 
-  async function saveNow() {
+  async function saveSnapshot(snapshot: DailyLog) {
     const generation = ++saveGeneration.current;
     setSaveState('saving');
     try {
-      await dailyLogRepository.save(db, log);
+      await queueWrite(db, `daily-log:${snapshot.date}`, () => dailyLogRepository.save(db, snapshot));
       if (generation === saveGeneration.current) setSaveState('saved');
     } catch {
       if (generation === saveGeneration.current) setSaveState('error');
     }
   }
 
+  async function saveNow() { await saveSnapshot(logRef.current); }
+
   async function flushChanges() {
-    if (saveState !== 'idle' && saveState !== 'saved') await dailyLogRepository.save(db, log);
+    try { await flushPendingWrites(db); return true; }
+    catch { Alert.alert(t('agendaTitle'), t('notesSaveError')); return false; }
   }
 
   async function changeDate(offset: -1 | 1) {
-    await flushChanges();
+    if (!(await flushChanges())) return;
     setDate((current) => shiftDate(current, offset));
   }
 
   async function jumpToLastReview() {
     if (!lastReviewDate) return;
-    await flushChanges();
+    if (!(await flushChanges())) return;
     setDate(lastReviewDate);
   }
 
   async function closeReview() {
-    await flushChanges();
+    if (!(await flushChanges())) return;
     router.back();
   }
 

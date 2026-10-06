@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react';
-import { Alert, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
-import { ActionButton, AppInput, Card, EmptyState, LoadingView, Screen, ScreenHeader, SectionHeader } from '@/components/ui';
+import { ActionButton, AppInput, Card, EmptyState, IconButton, LoadingView, Screen, ScreenHeader, SectionHeader } from '@/components/ui';
 import { inboxRepository } from '@/data/repositories';
 import type { InboxItem } from '@/data/types';
 import { useDataVersion } from '@/providers/data-version-provider';
@@ -18,20 +18,28 @@ export default function InboxScreen() {
   const { refresh, version } = useDataVersion();
   const [items, setItems] = useState<InboxItem[]>([]);
   const [capture, setCapture] = useState('');
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     let active = true;
     inboxRepository.list(db).then((nextItems) => { if (active) setItems(nextItems); })
+      .catch(() => { if (active) Alert.alert(t('inboxTitle'), t('errorGeneric')); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [db, version]);
 
   async function addItem() {
-    if (!capture.trim()) return;
-    await inboxRepository.create(db, capture);
-    setCapture('');
-    refresh();
+    if (!capture.trim() || savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await inboxRepository.create(db, capture);
+      setCapture('');
+      refresh();
+    } catch { Alert.alert(t('saveToInbox'), t('errorGeneric')); }
+    finally { savingRef.current = false; setSaving(false); }
   }
 
   function confirmRemove(item: InboxItem) {
@@ -40,14 +48,14 @@ export default function InboxScreen() {
       {
         text: t('discard'),
         style: 'destructive',
-        onPress: () => { void inboxRepository.remove(db, item.id).then(refresh); },
+        onPress: () => { void inboxRepository.remove(db, item.id).then(refresh).catch(() => Alert.alert(t('discard'), t('errorGeneric'))); },
       },
     ]);
   }
 
   return (
     <Screen>
-      <ScreenHeader subtitle={t('inboxSubtitle')} title={t('inboxTitle')} />
+      <ScreenHeader action={<IconButton icon="settings-outline" label={t('settingsTitle')} onPress={() => router.push('/settings')} />} subtitle={t('inboxSubtitle')} title={t('inboxTitle')} />
 
       <Card style={styles.captureCard} tone="accent">
         <View style={styles.captureHeading}>
@@ -56,40 +64,34 @@ export default function InboxScreen() {
           </View>
           <View style={styles.flex}>
             <Text style={[styles.captureTitle, { color: theme.text }]}>{t('saveToInbox')}</Text>
-            <Text style={[styles.captureHint, { color: theme.textMuted }]}>{t('inboxPendingHint')}</Text>
+            <Text style={[styles.captureHint, { color: theme.textMuted }]}>{t('quickCaptureHomeHint')}</Text>
           </View>
         </View>
         <AppInput
+          editable={!saving}
           multiline
           onChangeText={setCapture}
           placeholder={t('capturePlaceholder')}
           style={styles.capture}
           value={capture}
         />
-        <ActionButton disabled={!capture.trim()} icon="arrow-down-circle-outline" label={t('saveToInbox')} onPress={() => void addItem()} />
+        <ActionButton disabled={saving || !capture.trim()} icon="add" label={saving ? t('reviewSaving') : t('saveToInbox')} onPress={() => void addItem()} />
       </Card>
 
       <View style={styles.section}>
         <SectionHeader count={items.length} subtitle={t('inboxPendingHint')} title={t('inboxPending')} />
         {loading ? <LoadingView /> : items.length === 0 ? <EmptyState icon="mail-open-outline" text={t('inboxEmpty')} /> : (
           <View style={styles.list}>
-            {items.map((item, index) => (
+            {items.map((item) => (
               <Card key={item.id} style={styles.itemCard}>
-                <View style={styles.itemHeading}>
-                  <View style={[styles.itemNumber, { backgroundColor: theme.surfaceRaised }]}>
-                    <Text style={[styles.itemNumberText, { color: theme.accentSoft }]}>{String(index + 1).padStart(2, '0')}</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel={`${t('organize')}: ${item.content}`} onPress={() => router.push(`/inbox/${item.id}`)} style={styles.itemHeading}>
+                  <View style={styles.flex}>
+                    <Text numberOfLines={4} style={[styles.itemText, { color: theme.text }]}>{item.content}</Text>
+                    <Text style={[styles.captureHint, { color: theme.accentSoft }]}>{t('organize')}</Text>
                   </View>
-                  <Text style={[styles.itemText, { color: theme.text }]}>{item.content}</Text>
-                </View>
-                <View style={[styles.divider, { backgroundColor: theme.border }]} />
-                <View style={styles.actions}>
-                  <View style={styles.action}>
-                    <ActionButton icon="options-outline" label={t('organize')} onPress={() => router.push(`/inbox/${item.id}`)} />
-                  </View>
-                  <View style={styles.action}>
-                    <ActionButton icon="trash-outline" kind="danger" label={t('discard')} onPress={() => confirmRemove(item)} />
-                  </View>
-                </View>
+                  <Ionicons name="chevron-forward" color={theme.textMuted} size={18} />
+                </Pressable>
+                <IconButton icon="trash-outline" label={`${t('discard')}: ${item.content}`} onPress={() => confirmRemove(item)} />
               </Card>
             ))}
           </View>
@@ -109,12 +111,7 @@ const styles = StyleSheet.create({
   capture: { minHeight: 92, textAlignVertical: 'top' },
   section: { gap: 12 },
   list: { gap: 11 },
-  itemCard: { gap: 14 },
-  itemHeading: { alignItems: 'flex-start', flexDirection: 'row', gap: 12 },
-  itemNumber: { alignItems: 'center', borderRadius: 12, height: 34, justifyContent: 'center', width: 34 },
-  itemNumberText: { fontSize: 11, fontWeight: '900' },
-  itemText: { flex: 1, fontSize: 16, fontWeight: '600', lineHeight: 23 },
-  divider: { height: 1 },
-  actions: { flexDirection: 'row', gap: 9 },
-  action: { flex: 1 },
+  itemCard: { flexDirection: 'row', alignItems: 'center', gap: 12 },
+  itemHeading: { flex: 1, minHeight: 48, alignItems: 'center', flexDirection: 'row', gap: 8 },
+  itemText: { fontSize: 16, fontWeight: '600', lineHeight: 23 },
 });

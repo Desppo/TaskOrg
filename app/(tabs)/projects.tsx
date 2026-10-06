@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  Alert,
   Animated,
   Modal,
   Pressable,
@@ -17,6 +18,7 @@ import {
   AppInput,
   Card,
   EmptyState,
+  IconButton,
   LoadingView,
   Screen,
   ScreenHeader,
@@ -97,21 +99,19 @@ function CreateForm({
   const [selectedColor, setSelectedColor] = useState<string>(PROJECT_COLORS[0]);
   const [selectedIcon, setSelectedIcon] = useState<ProjectIcon>("folder");
   const [showPicker, setShowPicker] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 
   async function create() {
-    if (!name.trim()) return;
-    await projectRepository.create(db, name, [t("columnTodo"), t("columnDoing"), t("columnDone")]);
-    // Update color & icon right after (create uses defaults)
-    // We need the id — use list to find newest
-    const all = await projectRepository.list(db, false);
-    if (all.length > 0) {
-      const newest = all.find((p) => p.name === name.trim()) ?? all[0];
-      if (newest) {
-        await projectRepository.updateMetadata(db, newest.id, { color: selectedColor, icon: selectedIcon });
-      }
-    }
-    setName("");
-    onCreated();
+    if (!name.trim() || savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await projectRepository.create(db, name, [t("columnTodo"), t("columnDoing"), t("columnDone")], { color: selectedColor, icon: selectedIcon });
+      setName("");
+      onCreated();
+    } catch { Alert.alert(t('newProject'), t('errorGeneric')); }
+    finally { savingRef.current = false; setSaving(false); }
   }
 
   return (
@@ -121,7 +121,7 @@ function CreateForm({
           <Ionicons color={selectedColor} name={selectedIcon as any} size={21} />
         </View>
         <Text style={[styles.cardTitle, { color: theme.text }]}>{t("newProject")}</Text>
-        <Pressable onPress={() => setShowPicker(!showPicker)} style={styles.paletteToggle}>
+        <Pressable accessibilityRole="button" accessibilityLabel={t('projectColor')} accessibilityState={{ expanded: showPicker }} onPress={() => setShowPicker(!showPicker)} style={styles.paletteToggle}>
           <Ionicons color={theme.textMuted} name="color-palette-outline" size={20} />
         </Pressable>
       </View>
@@ -138,13 +138,14 @@ function CreateForm({
       )}
       <View style={styles.inputRow}>
         <AppInput
+          editable={!saving}
           onChangeText={setName}
           onSubmitEditing={() => void create()}
           placeholder={t("projectPlaceholder")}
           style={styles.flex}
           value={name}
         />
-        <ActionButton disabled={!name.trim()} icon="add" label={t("add")} onPress={() => void create()} />
+        <ActionButton disabled={saving || !name.trim()} icon="add" label={saving ? t('reviewSaving') : t("add")} onPress={() => void create()} />
       </View>
     </Card>
   );
@@ -337,6 +338,8 @@ export default function ProjectsScreen() {
           <ScreenHeader subtitle={t("projectsSubtitle")} title={t("projectsTitle")} />
         </View>
         <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={viewGrid ? t('viewList') : t('viewGrid')}
           onPress={() => setViewGrid((v) => !v)}
           style={[styles.viewToggle, { backgroundColor: theme.surfaceRaised }]}
         >
@@ -346,6 +349,7 @@ export default function ProjectsScreen() {
             size={20}
           />
         </Pressable>
+        <IconButton icon="settings-outline" label={t('settingsTitle')} onPress={() => router.push('/settings')} />
       </View>
 
       {/* Tab: Activos / Archivados */}
@@ -353,6 +357,8 @@ export default function ProjectsScreen() {
         {[false, true].map((isArchived) => (
           <Pressable
             key={String(isArchived)}
+            accessibilityRole="tab"
+            accessibilityState={{ selected: showArchived === isArchived }}
             onPress={() => setShowArchived(isArchived)}
             style={[
               styles.tab,
@@ -386,7 +392,7 @@ export default function ProjectsScreen() {
         <LoadingView />
       ) : showArchived ? (
         archived.length === 0 ? (
-          <EmptyState icon="archive-outline" text={t("projectsEmpty")} />
+          <EmptyState icon="archive-outline" text={t("archivedProjectsEmpty")} />
         ) : (
           <View style={styles.list}>
             {archived.map((p) => (

@@ -3,7 +3,7 @@ import type { SQLiteDatabase } from 'expo-sqlite';
 export const DATABASE_NAME = 'taskorg.db';
 export const GENERAL_AREA_ID = '00000000-0000-4000-8000-000000000001';
 
-const DATABASE_VERSION = 3;
+export const DATABASE_VERSION = 4;
 
 export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
   await db.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
@@ -141,6 +141,7 @@ export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
         now,
         now,
       );
+      await transaction.execAsync('PRAGMA user_version = 1');
     });
     currentVersion = 1;
   }
@@ -151,6 +152,7 @@ export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
       // promises deletion from the device, so purge those legacy rows.
       await transaction.runAsync('DELETE FROM tasks WHERE deleted_at IS NOT NULL');
       await transaction.runAsync('DELETE FROM inbox_items WHERE deleted_at IS NOT NULL');
+      await transaction.execAsync('PRAGMA user_version = 2');
     });
     currentVersion = 2;
   }
@@ -179,8 +181,20 @@ export async function migrateDatabase(db: SQLiteDatabase): Promise<void> {
       await transaction.runAsync(
         'ALTER TABLE tasks ADD COLUMN milestone_id TEXT REFERENCES project_milestones(id) ON DELETE SET NULL',
       );
+      await transaction.execAsync('PRAGMA user_version = 3');
     });
     currentVersion = 3;
+  }
+
+  if (currentVersion === 3) {
+    await db.withExclusiveTransactionAsync(async (transaction) => {
+      // Add recurrence rule duration fields
+      await transaction.runAsync("ALTER TABLE task_recurrence_rules ADD COLUMN end_type TEXT NOT NULL DEFAULT 'date'");
+      await transaction.runAsync("ALTER TABLE task_recurrence_rules ADD COLUMN end_value TEXT");
+      await transaction.runAsync("UPDATE task_recurrence_rules SET end_type = CASE WHEN end_date IS NULL THEN 'none' ELSE 'date' END, end_value = end_date");
+      await transaction.execAsync('PRAGMA user_version = 4');
+    });
+    currentVersion = 4;
   }
 
   if (currentVersion !== DATABASE_VERSION) {

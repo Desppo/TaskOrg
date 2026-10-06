@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Animated, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { AppInput, IconButton, Screen } from '@/components/ui';
 import { recurrenceRepository, taskRepository } from '@/data/repositories';
 import type { OccurrenceWithTask, TaskItem } from '@/data/types';
 import { useDataVersion } from '@/providers/data-version-provider';
@@ -107,6 +107,7 @@ function TaskRow({
     const d = new Date(dueDate + 'T12:00:00');
     return d.toLocaleDateString(locale, { weekday: 'short', day: 'numeric', month: 'short' });
   }, [dueDate, today, locale]);
+  const { t } = useLanguage();
 
   return (
     <Pressable onPress={onPress} style={({ pressed }) => [styles.taskRow, { opacity: pressed ? 0.76 : 1 }]}>
@@ -122,7 +123,7 @@ function TaskRow({
         {overdue && dueDate ? (
           <View style={styles.taskMeta}>
             <Ionicons color={theme.danger} name="alert-circle-outline" size={12} />
-            <Text style={[styles.taskMetaText, { color: theme.danger }]}>Vencida · {dueDate}</Text>
+            <Text style={[styles.taskMetaText, { color: theme.danger }]}>{t('overdue')} · {dateLabel}</Text>
           </View>
         ) : dateLabel ? (
           <View style={styles.taskMeta}>
@@ -168,15 +169,17 @@ function EmptyRow({ text }: { text: string }) {
 }
 
 // ─── Quick-add bar ─────────────────────────────────────────────────────────────
-function QuickAddBar({ placeholder, value, onChangeText, onSubmit }: { placeholder: string; value: string; onChangeText: (v: string) => void; onSubmit: () => void }) {
+function QuickAddBar({ placeholder, value, onChangeText, onSubmit, disabled }: { placeholder: string; value: string; onChangeText: (v: string) => void; onSubmit: () => void; disabled: boolean }) {
   const theme = useAppTheme();
+  const { t } = useLanguage();
   const [focused, setFocused] = useState(false);
   return (
     <View style={[styles.quickAdd, { backgroundColor: theme.surface, borderColor: focused ? theme.accent : theme.border, borderWidth: focused ? 1.5 : 1 }]}>
       <View style={[styles.quickAddIcon, { backgroundColor: focused ? theme.accentSurface : theme.surfaceRaised }]}>
         <Ionicons color={focused ? theme.accentSoft : theme.textMuted} name="add" size={20} />
       </View>
-      <TextInput
+      <AppInput
+        editable={!disabled}
         onBlur={() => setFocused(false)}
         onChangeText={onChangeText}
         onFocus={() => setFocused(true)}
@@ -189,7 +192,7 @@ function QuickAddBar({ placeholder, value, onChangeText, onSubmit }: { placehold
         value={value}
       />
       {value.trim().length > 0 && (
-        <Pressable onPress={onSubmit} style={[styles.quickAddSend, { backgroundColor: theme.accent }]}>
+        <Pressable accessibilityRole="button" accessibilityLabel={t('add')} accessibilityState={{ disabled }} disabled={disabled} onPress={onSubmit} style={[styles.quickAddSend, { backgroundColor: theme.accent }]}>
           <Ionicons color="#FFFFFF" name="arrow-up" size={16} />
         </Pressable>
       )}
@@ -232,6 +235,9 @@ export default function TodayScreen() {
   const [upcomingOccurrences, setUpcomingOccurrences] = useState<OccurrenceWithTask[]>([]);
   const [taskTitle, setTaskTitle] = useState('');
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [showCompleted, setShowCompleted] = useState(false);
+  const savingRef = useRef(false);
 
   useEffect(() => {
     let active = true;
@@ -260,10 +266,19 @@ export default function TodayScreen() {
   }, [date, db, version]);
 
   async function addTask() {
-    if (!taskTitle.trim()) return;
-    await taskRepository.createForToday(db, taskTitle, date);
-    setTaskTitle('');
-    refresh();
+    if (!taskTitle.trim() || savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await taskRepository.createForToday(db, taskTitle, date);
+      setTaskTitle('');
+      refresh();
+    } catch {
+      Alert.alert(t('tasksTitle'), t('errorGeneric'));
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
   }
 
   async function toggleTask(task: TaskItem) {
@@ -347,8 +362,7 @@ export default function TodayScreen() {
   }
 
   return (
-    <SafeAreaView edges={['top']} style={[styles.safe, { backgroundColor: theme.background }]}>
-      <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+    <Screen contentStyle={styles.scroll}>
 
         {/* ── Header ─────────────────────────────────────────── */}
         <View style={styles.header}>
@@ -363,38 +377,11 @@ export default function TodayScreen() {
                   : `${totalTasks} pending task${totalTasks === 1 ? '' : 's'}`}
             </Text>
           </View>
-          <View style={[styles.headerBadge, { backgroundColor: theme.accentSurface }]}>
-            <Ionicons color={theme.accentSoft} name="list" size={22} />
-          </View>
+          <IconButton icon="settings-outline" label={t('settingsTitle')} onPress={() => router.push('/settings')} />
         </View>
 
-        {/* ── Daily review card ───────────────────────────────── */}
-        <Pressable accessibilityRole="button" onPress={() => router.push('/review')}>
-          {({ pressed }) => (
-            <View style={[styles.reviewCard, { backgroundColor: theme.surface, borderColor: theme.border, opacity: pressed ? 0.78 : 1 }]}>
-              <View style={[styles.reviewIconWrap, { backgroundColor: theme.accentSurface }]}>
-                <Ionicons color={theme.accentSoft} name="journal-outline" size={20} />
-              </View>
-              <View style={styles.flex}>
-                <Text style={[styles.reviewTitle, { color: theme.text }]}>{t('openReview')}</Text>
-                <Text style={[styles.reviewHint, { color: theme.textMuted }]}>{t('todayReviewHint')}</Text>
-              </View>
-              <View style={styles.reviewMetrics}>
-                <View style={[styles.pill, { backgroundColor: theme.successSurface }]}>
-                  <Ionicons color={theme.success} name="checkmark" size={12} />
-                  <Text style={[styles.pillText, { color: theme.success }]}>{completed.length}</Text>
-                </View>
-                <View style={[styles.pill, { backgroundColor: theme.warningSurface }]}>
-                  <Ionicons color={theme.warning} name="time-outline" size={12} />
-                  <Text style={[styles.pillText, { color: theme.warning }]}>{totalTasks}</Text>
-                </View>
-              </View>
-            </View>
-          )}
-        </Pressable>
-
         {/* ── Quick add ──────────────────────────────────────── */}
-        <QuickAddBar onChangeText={setTaskTitle} onSubmit={() => void addTask()} placeholder={t('tasksQuickAdd')} value={taskTitle} />
+        <QuickAddBar disabled={saving} onChangeText={setTaskTitle} onSubmit={() => void addTask()} placeholder={t('tasksQuickAdd')} value={taskTitle} />
 
         {/* ── Task list ──────────────────────────────────────── */}
         {loading ? (
@@ -461,8 +448,11 @@ export default function TodayScreen() {
               <>
                 <Divider />
                 <View style={styles.section}>
-                  <SectionLabel count={completed.length} title={t('completedToday')} />
-                  {completed.map((task) => (
+                  <Pressable accessibilityRole="button" accessibilityState={{ expanded: showCompleted }} onPress={() => setShowCompleted(value => !value)} style={styles.completedToggle}>
+                    <View style={styles.flex}><SectionLabel count={completed.length} title={t('completedToday')} /></View>
+                    <Ionicons color={theme.textMuted} name={showCompleted ? 'chevron-up' : 'chevron-down'} size={18} />
+                  </Pressable>
+                  {showCompleted && completed.map((task) => (
                     <TaskRow
                       key={`task-done-${task.id}`}
                       dueDate={task.dueDate}
@@ -483,31 +473,29 @@ export default function TodayScreen() {
             )}
           </View>
         )}
-      </ScrollView>
-    </SafeAreaView>
+        <Pressable accessibilityRole="button" onPress={() => router.push('/review')} style={[styles.reviewCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+          <Ionicons color={theme.accentSoft} name="journal-outline" size={20} />
+          <Text style={[styles.reviewTitle, styles.flex, { color: theme.text }]}>{t('openReview')}</Text>
+          <Ionicons color={theme.textMuted} name="chevron-forward" size={18} />
+        </Pressable>
+    </Screen>
   );
 }
 
 const styles = StyleSheet.create({
-  safe: { flex: 1 },
-  scroll: { paddingHorizontal: 20, paddingTop: 12, paddingBottom: 120, gap: 16 },
+  scroll: { paddingTop: 12, gap: 16 },
   header: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   headerText: { flex: 1 },
   eyebrow: { fontSize: 10, fontWeight: '900', letterSpacing: 1.8, marginBottom: 6 },
   title: { fontSize: 30, fontWeight: '900', letterSpacing: -0.9, lineHeight: 35 },
   subtitle: { fontSize: 13, marginTop: 5, lineHeight: 18 },
-  headerBadge: { alignItems: 'center', borderRadius: 16, height: 48, justifyContent: 'center', width: 48 },
+  completedToggle: { flexDirection: 'row', alignItems: 'center', minHeight: 48 },
   reviewCard: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: 20, borderWidth: 1, padding: 14 },
-  reviewIconWrap: { alignItems: 'center', borderRadius: 14, height: 42, justifyContent: 'center', width: 42 },
   reviewTitle: { fontSize: 14, fontWeight: '800' },
-  reviewHint: { fontSize: 11, lineHeight: 16, marginTop: 2 },
-  reviewMetrics: { gap: 5 },
-  pill: { alignItems: 'center', borderRadius: 9, flexDirection: 'row', gap: 3, paddingHorizontal: 7, paddingVertical: 4 },
-  pillText: { fontSize: 11, fontWeight: '900' },
   quickAdd: { flexDirection: 'row', alignItems: 'center', borderRadius: 18, gap: 10, paddingHorizontal: 12, paddingVertical: 8, minHeight: 56 },
   quickAddIcon: { alignItems: 'center', borderRadius: 12, height: 36, justifyContent: 'center', width: 36 },
-  quickAddInput: { flex: 1, fontSize: 15, fontWeight: '600' },
-  quickAddSend: { alignItems: 'center', borderRadius: 12, height: 36, justifyContent: 'center', width: 36 },
+  quickAddInput: { flex: 1, fontSize: 15, fontWeight: '600', minHeight: 40, paddingHorizontal: 0, paddingVertical: 6, borderWidth: 0, backgroundColor: 'transparent' },
+  quickAddSend: { alignItems: 'center', borderRadius: 12, height: 44, justifyContent: 'center', width: 44 },
   listCard: { borderRadius: 24, borderWidth: 1, overflow: 'hidden' },
   section: { paddingHorizontal: 18, paddingVertical: 18, gap: 4 },
   sectionLabelRow: { flexDirection: 'row', alignItems: 'center', marginBottom: 12, gap: 8 },

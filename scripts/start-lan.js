@@ -21,11 +21,14 @@ if (!address) {
 }
 
 console.log(`TaskOrg: Expo usará la dirección local ${address}.`);
+console.log('iPhone: abre Expo Go una vez y escanea el QR con Cámara, en la misma Wi-Fi.');
+console.log('Si iOS lo solicita, permite el acceso de Expo Go a la red local.');
 const expoCli = require.resolve('expo/bin/cli');
-const child = spawn(process.execPath, [expoCli, 'start', '--lan', '--clear'], {
+const child = spawn(process.execPath, [expoCli, 'start', '--lan', '--clear', ...process.argv.slice(2)], {
   env: {
     ...process.env,
-    EXPO_OFFLINE: '1',
+    // Skip startup version checks without preventing Expo Go from resolving its assets.
+    EXPO_NO_DEPENDENCY_VALIDATION: '1',
     REACT_NATIVE_PACKAGER_HOSTNAME: address,
   },
   stdio: 'inherit',

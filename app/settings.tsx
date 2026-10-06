@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ComponentProps } from 'react';
+import { useCallback, useEffect, useRef, useState, type ComponentProps } from 'react';
 import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import Constants from 'expo-constants';
@@ -8,9 +8,9 @@ import { useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
 import { useSQLiteContext } from 'expo-sqlite';
 import { BackButton, Card, Screen, ScreenHeader, SectionHeader } from '@/components/ui';
-import { createBackup, getDataStats, resetAllData, restoreBackup, type DataStats } from '@/data/data-management';
+import { createBackup, getDataStats, inspectBackup, resetAllData, restoreBackup, type DataStats } from '@/data/data-management';
 import { useDataVersion } from '@/providers/data-version-provider';
-import { type Language, useLanguage } from '@/providers/language-provider';
+import { useLanguage } from '@/providers/language-provider';
 import { type ThemePreference, useAppTheme, useThemePreference } from '@/theme/theme';
 
 type IconName = ComponentProps<typeof Ionicons>['name'];
@@ -21,11 +21,13 @@ export default function SettingsScreen() {
   const db = useSQLiteContext();
   const router = useRouter();
   const theme = useAppTheme();
-  const { language, setLanguage, t } = useLanguage();
+  const { language, locale, setLanguage, t } = useLanguage();
   const { preference, setPreference } = useThemePreference();
   const { refresh, version } = useDataVersion();
   const [stats, setStats] = useState<DataStats>(emptyStats);
-  const [busy, setBusy] = useState<'export' | 'import' | 'reset' | null>(null);
+  const [busy, setBusyState] = useState<'export' | 'import' | 'reset' | null>(null);
+  const busyRef = useRef<typeof busy>(null);
+  function setBusy(value: typeof busy) { busyRef.current = value; setBusyState(value); }
 
   const loadStats = useCallback(() => {
     getDataStats(db).then(setStats).catch(() => undefined);
@@ -34,10 +36,11 @@ export default function SettingsScreen() {
   useEffect(() => { loadStats(); }, [loadStats, version]);
 
   async function exportData() {
+    if (busyRef.current) return;
     setBusy('export');
     try {
-      const content = await createBackup(db);
-      const date = new Date().toISOString().slice(0, 10);
+      const content = await createBackup(db, { language, theme: preference });
+      const date = new Date().toISOString().replace(/[:.]/g, '-');
       const file = new File(Paths.cache, `taskorg-backup-${date}.json`);
       file.create({ overwrite: true });
       file.write(content);
@@ -51,26 +54,42 @@ export default function SettingsScreen() {
   }
 
   async function chooseBackup() {
+    if (busyRef.current) return;
+    setBusy('import');
     try {
       const result = await DocumentPicker.getDocumentAsync({ copyToCacheDirectory: true, type: 'application/json' });
-      if (result.canceled) return;
+      if (result.canceled) { setBusy(null); return; }
       const asset = result.assets[0];
       if (!asset) throw new Error('Missing backup file');
-      if (asset.size && asset.size > 25 * 1024 * 1024) throw new Error('Backup file is too large');
       const content = await new File(asset.uri).text();
-      Alert.alert(t('importConfirmTitle'), t('importConfirmBody'), [
-        { text: t('cancel'), style: 'cancel' },
+      const summary = inspectBackup(content);
+      const exportedAt = new Date(summary.exportedAt);
+      const details = [
+        asset.name,
+        ...(Number.isNaN(exportedAt.getTime()) ? [] : [exportedAt.toLocaleString(locale)]),
+        `${summary.projects} ${t('dataProjects')} · ${summary.tasks} ${t('dataTasks')}`,
+        `${summary.inbox} ${t('dataInbox')} · ${summary.reviews} ${t('dataReviews')}`,
+        '',
+        t('importConfirmBody'),
+      ].join('\n');
+      Alert.alert(t('importConfirmTitle'), details, [
+        { text: t('cancel'), style: 'cancel', onPress: () => setBusy(null) },
         { text: t('import'), onPress: () => { void importData(content); } },
       ]);
     } catch {
-      Alert.alert(t('importBackup'), t('backupError'));
+      setBusy(null);
+      Alert.alert(t('importBackup'), t('backupInvalid'));
     }
   }
 
   async function importData(content: string) {
     setBusy('import');
     try {
-      await restoreBackup(db, content);
+      const preferences = await restoreBackup(db, content);
+      if (preferences) {
+        setLanguage(preferences.language);
+        setPreference(preferences.theme);
+      }
       refresh();
       loadStats();
       Alert.alert(t('importBackup'), t('importSuccess'));
@@ -121,7 +140,45 @@ export default function SettingsScreen() {
       />
 
       <View style={styles.section}>
-        <SectionHeader subtitle={t('appearanceHint')} title={t('appearance')} />
+        <SectionHeader subtitle={t('backupContents')} title={t('backupTitle')} />
+        <Card style={styles.actionsCard}>
+          <DataAction
+            disabled={busy !== null}
+            busy={busy === 'export'}
+            hint={t('exportBackupHint')}
+            icon="download-outline"
+            label={t('exportBackup')}
+            onPress={() => void exportData()}
+          />
+          <View style={[styles.divider, { backgroundColor: theme.border }]} />
+          <DataAction
+            disabled={busy !== null}
+            busy={busy === 'import'}
+            hint={t('importBackupHint')}
+            icon="document-attach-outline"
+            label={t('importBackup')}
+            onPress={() => void chooseBackup()}
+          />
+        </Card>
+
+        <Card style={styles.privacyCard}>
+          <Ionicons color={theme.accentSoft} name="information-circle-outline" size={22} />
+          <Text style={[styles.privacyText, { color: theme.textSecondary }]}>{t('backupSaveHint')}</Text>
+        </Card>
+        <Text style={[styles.transferHint, { color: theme.textMuted }]}>{t('transferHint')}</Text>
+        <Card style={styles.statsCard}>
+          <Text style={[styles.cardTitle, { color: theme.text }]}>{t('dataSummary')}</Text>
+          <View style={styles.statsGrid}>
+            <Stat value={stats.tasks} label={t('dataTasks')} />
+            <Stat value={stats.projects} label={t('dataProjects')} />
+            <Stat value={stats.inbox} label={t('dataInbox')} />
+            <Stat value={stats.reviews} label={t('dataReviews')} />
+          </View>
+        </Card>
+      </View>
+
+      <View style={styles.section}>
+        <SectionHeader title={t('appearance')} />
         <Card style={styles.preferenceCard}>
           <PreferenceLabel icon="language-outline" label={t('language')} />
           <View style={styles.choiceRow}>
@@ -144,41 +201,9 @@ export default function SettingsScreen() {
 
       <View style={styles.section}>
         <SectionHeader subtitle={t('dataPrivacyHint')} title={t('dataPrivacy')} />
-        <Card style={styles.statsCard} tone="accent">
-          <Text style={[styles.cardTitle, { color: theme.text }]}>{t('dataSummary')}</Text>
-          <View style={styles.statsGrid}>
-            <Stat value={stats.tasks} label={t('dataTasks')} />
-            <Stat value={stats.projects} label={t('dataProjects')} />
-            <Stat value={stats.inbox} label={t('dataInbox')} />
-            <Stat value={stats.reviews} label={t('dataReviews')} />
-          </View>
-        </Card>
-
-        <Card style={styles.actionsCard}>
-          <DataAction
-            busy={busy === 'export'}
-            hint={t('exportBackupHint')}
-            icon="cloud-upload-outline"
-            label={t('exportBackup')}
-            onPress={() => void exportData()}
-          />
-          <View style={[styles.divider, { backgroundColor: theme.border }]} />
-          <DataAction
-            busy={busy === 'import'}
-            hint={t('importBackupHint')}
-            icon="cloud-download-outline"
-            label={t('importBackup')}
-            onPress={() => void chooseBackup()}
-          />
-        </Card>
-
-        <Card style={styles.privacyCard} tone="success">
-          <Ionicons color={theme.success} name="shield-checkmark-outline" size={22} />
-          <Text style={[styles.privacyText, { color: theme.textSecondary }]}>{t('dataPrivacyHint')}</Text>
-        </Card>
-
         <Card style={styles.dangerCard} tone="danger">
           <DataAction
+            disabled={busy !== null}
             busy={busy === 'reset'}
             danger
             hint={t('resetDataHint')}
@@ -193,7 +218,7 @@ export default function SettingsScreen() {
         <SectionHeader title={t('about')} />
         <Card style={styles.aboutCard}>
           <Text style={[styles.cardTitle, { color: theme.text }]}>TaskOrg</Text>
-          <Text style={[styles.version, { color: theme.textMuted }]}>{t('version')} {Constants.expoConfig?.version ?? '0.1.0'} · local-first</Text>
+          <Text style={[styles.version, { color: theme.textMuted }]}>{t('version')} {Constants.expoConfig?.version ?? '0.1.0'}</Text>
         </Card>
       </View>
     </Screen>
@@ -235,11 +260,11 @@ function Stat({ value, label }: { value: number; label: string }) {
   );
 }
 
-function DataAction({ busy, danger = false, hint, icon, label, onPress }: { busy: boolean; danger?: boolean; hint: string; icon: IconName; label: string; onPress: () => void }) {
+function DataAction({ busy, disabled, danger = false, hint, icon, label, onPress }: { busy: boolean; disabled: boolean; danger?: boolean; hint: string; icon: IconName; label: string; onPress: () => void }) {
   const theme = useAppTheme();
   const color = danger ? theme.danger : theme.accentSoft;
   return (
-    <Pressable accessibilityRole="button" disabled={busy} onPress={onPress} style={({ pressed }) => [styles.dataAction, { opacity: pressed || busy ? 0.6 : 1 }]}>
+    <Pressable accessibilityRole="button" accessibilityState={{ disabled, busy }} disabled={disabled} onPress={onPress} style={({ pressed }) => [styles.dataAction, { opacity: pressed || disabled ? 0.6 : 1 }]}>
       <View style={[styles.dataIcon, { backgroundColor: danger ? theme.dangerSurface : theme.accentSurface }]}> 
         {busy ? <ActivityIndicator color={color} size="small" /> : <Ionicons color={color} name={icon} size={21} />}
       </View>
@@ -276,6 +301,7 @@ const styles = StyleSheet.create({
   dataHint: { fontSize: 11, lineHeight: 16, marginTop: 3 },
   privacyCard: { alignItems: 'center', flexDirection: 'row', gap: 11 },
   privacyText: { flex: 1, fontSize: 12, lineHeight: 18 },
+  transferHint: { fontSize: 13, lineHeight: 19 },
   dangerCard: { paddingVertical: 5 },
   aboutCard: { alignItems: 'center' },
   version: { fontSize: 12, marginTop: 5 },

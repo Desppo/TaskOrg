@@ -2,23 +2,24 @@
   "expo": {
     "name": "TaskOrg",
     "slug": "taskorg",
-    "version": "0.3.0",
+    "version": "0.5.0",
     "icon": "./assets/icon.png",
     "orientation": "portrait",
     "scheme": "taskorg",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
+    "platforms": ["ios", "android"],
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.taskorg.mobile",
-      "buildNumber": "3",
+      "buildNumber": "5",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {
       "package": "com.taskorg.mobile",
-      "versionCode": 3,
+      "versionCode": 5,
       "predictiveBackGestureEnabled": true,
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
@@ -31,7 +32,7 @@
     },
     "plugins": [
       "expo-router",
-      "expo-localization",
+      ["expo-localization", { "supportedLocales": { "ios": ["es", "en"] } }],
       "expo-sqlite",
       [
         "expo-splash-screen",
@@ -45,7 +46,7 @@
             "backgroundColor": "#0B0C12"
           }
         }
-      ],
+      ]
     ]
   }
 }

@@ -12,6 +12,9 @@ web-build/
 build/
 releases/*.apk
 releases/*.aab
+releases/*.ipa
+releases/*.app
+releases/*.tar.gz
 
 # Local environment and data
 .env

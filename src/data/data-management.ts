@@ -1,5 +1,6 @@
 import type { SQLiteDatabase } from 'expo-sqlite';
-import { GENERAL_AREA_ID } from './database';
+import { DATABASE_VERSION, GENERAL_AREA_ID } from './database';
+import { flushPendingWrites } from './pending-writes';
 
 type BackupValue = string | number | null;
 type BackupRow = Record<string, BackupValue>;
@@ -10,7 +11,7 @@ const TABLES = {
   project_columns: ['id', 'project_id', 'name', 'position', 'created_at', 'updated_at', 'deleted_at'],
   project_milestones: ['id', 'project_id', 'title', 'target_date', 'completed', 'created_at', 'updated_at'],
   tasks: ['id', 'area_id', 'project_id', 'column_id', 'milestone_id', 'title', 'notes', 'due_date', 'priority', 'status', 'completed_on', 'position', 'created_at', 'updated_at', 'deleted_at'],
-  task_recurrence_rules: ['id', 'task_id', 'frequency', 'interval_value', 'days_of_week', 'start_date', 'end_date', 'created_at', 'updated_at'],
+  task_recurrence_rules: ['id', 'task_id', 'frequency', 'interval_value', 'days_of_week', 'start_date', 'end_date', 'end_type', 'end_value', 'created_at', 'updated_at'],
   task_occurrences: ['id', 'task_id', 'occurrence_date', 'completed_on', 'skipped', 'created_at', 'updated_at'],
   events: ['id', 'area_id', 'title', 'description', 'start_at', 'end_at', 'all_day', 'color', 'created_at', 'updated_at', 'deleted_at'],
   inbox_items: ['id', 'content', 'created_at', 'updated_at', 'deleted_at'],
@@ -27,10 +28,17 @@ export interface DataStats {
   archived: number;
 }
 
+export interface BackupPreferences {
+  language: 'es' | 'en';
+  theme: 'system' | 'light' | 'dark';
+}
+
 interface BackupFile {
   format: 'taskorg-backup';
   version: 1;
   exportedAt: string;
+  schemaVersion?: number;
+  preferences?: BackupPreferences;
   tables: Record<TableName, BackupRow[]>;
 }
 
@@ -49,16 +57,20 @@ export async function getDataStats(db: SQLiteDatabase): Promise<DataStats> {
   return row ?? { tasks: 0, projects: 0, inbox: 0, reviews: 0, archived: 0 };
 }
 
-export async function createBackup(db: SQLiteDatabase): Promise<string> {
-  const entries = await Promise.all(INSERT_ORDER.map(async (table) => {
-    const rows = await db.getAllAsync<BackupRow>(`SELECT * FROM ${table}`);
-    return [table, rows] as const;
-  }));
+export async function createBackup(db: SQLiteDatabase, preferences?: BackupPreferences): Promise<string> {
+  await flushPendingWrites(db);
+  const tables = {} as Record<TableName, BackupRow[]>;
+  // All tables must describe the same moment, including their relationships.
+  await db.withExclusiveTransactionAsync(async (transaction) => {
+    for (const table of INSERT_ORDER) tables[table] = await transaction.getAllAsync<BackupRow>(`SELECT * FROM ${table}`);
+  });
   const backup: BackupFile = {
     format: 'taskorg-backup',
     version: 1,
     exportedAt: new Date().toISOString(),
-    tables: Object.fromEntries(entries) as Record<TableName, BackupRow[]>,
+    schemaVersion: DATABASE_VERSION,
+    preferences,
+    tables,
   };
   return JSON.stringify(backup, null, 2);
 }
@@ -69,6 +81,17 @@ function parseBackup(content: string): BackupFile {
   const candidate = parsed as Partial<BackupFile>;
   if (candidate.format !== 'taskorg-backup' || candidate.version !== 1 || !candidate.tables || typeof candidate.tables !== 'object') {
     throw new Error('Unsupported backup');
+  }
+  if (candidate.schemaVersion !== undefined && (!Number.isInteger(candidate.schemaVersion) || candidate.schemaVersion < 1 || candidate.schemaVersion > DATABASE_VERSION)) {
+    throw new Error('Unsupported database version');
+  }
+  // Reject information we cannot restore rather than silently dropping it.
+  for (const table of Object.keys(candidate.tables)) {
+    if (!Object.prototype.hasOwnProperty.call(TABLES, table)) throw new Error(`Unsupported table: ${table}`);
+  }
+  const preferences = candidate.preferences;
+  if (preferences !== undefined && (!preferences || !['es', 'en'].includes(preferences.language) || !['system', 'light', 'dark'].includes(preferences.theme))) {
+    throw new Error('Invalid preferences');
   }
 
   const tables = {} as Record<TableName, BackupRow[]>;
@@ -82,10 +105,21 @@ function parseBackup(content: string): BackupFile {
     tables[table] = rows.map((input) => {
       if (!input || typeof input !== 'object' || Array.isArray(input)) throw new Error(`Invalid row: ${table}`);
       const row = input as Record<string, unknown>;
+      for (const column of Object.keys(row)) {
+        if (!(TABLES[table] as readonly string[]).includes(column)) throw new Error(`Unsupported column: ${table}.${column}`);
+      }
       const normalized: BackupRow = {};
       for (const column of TABLES[table]) {
         const value = row[column];
         if (value === undefined) {
+          if (table === 'task_recurrence_rules' && column === 'end_type') {
+            normalized[column] = row.end_date ? 'date' : 'none';
+            continue;
+          }
+          if (table === 'task_recurrence_rules' && column === 'end_value') {
+            normalized[column] = typeof row.end_date === 'string' ? row.end_date : null;
+            continue;
+          }
           // Legacy backup missing new optional columns — provide safe defaults
           const DEFAULTS: Record<string, BackupValue> = { pinned: 0, icon: 'folder', archived_at: null, milestone_id: null };
           normalized[column] = (column in DEFAULTS ? DEFAULTS[column] : null) ?? null;
@@ -104,12 +138,27 @@ function parseBackup(content: string): BackupFile {
     format: 'taskorg-backup',
     version: 1,
     exportedAt: typeof candidate.exportedAt === 'string' ? candidate.exportedAt : '',
+    schemaVersion: candidate.schemaVersion,
+    preferences,
     tables,
   };
 }
 
-export async function restoreBackup(db: SQLiteDatabase, content: string): Promise<void> {
+export function inspectBackup(content: string) {
   const backup = parseBackup(content);
+  return {
+    exportedAt: backup.exportedAt,
+    projects: backup.tables.projects.length,
+    tasks: backup.tables.tasks.length,
+    inbox: backup.tables.inbox_items.length,
+    reviews: backup.tables.daily_logs.length,
+    preferences: backup.preferences,
+  };
+}
+
+export async function restoreBackup(db: SQLiteDatabase, content: string): Promise<BackupPreferences | undefined> {
+  const backup = parseBackup(content);
+  await flushPendingWrites(db);
   await db.withExclusiveTransactionAsync(async (transaction) => {
     await transaction.execAsync('PRAGMA defer_foreign_keys = ON;');
     for (const table of DELETE_ORDER) await transaction.runAsync(`DELETE FROM ${table}`);
@@ -129,9 +178,11 @@ export async function restoreBackup(db: SQLiteDatabase, content: string): Promis
     const violations = await transaction.getAllAsync('PRAGMA foreign_key_check');
     if (violations.length > 0) throw new Error('Backup contains invalid relationships');
   });
+  return backup.preferences;
 }
 
 export async function resetAllData(db: SQLiteDatabase): Promise<void> {
+  await flushPendingWrites(db);
   await db.withExclusiveTransactionAsync(async (transaction) => {
     for (const table of DELETE_ORDER) await transaction.runAsync(`DELETE FROM ${table}`);
     const timestamp = new Date().toISOString();

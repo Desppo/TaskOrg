@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Alert,
   Modal,
   Pressable,
   ScrollView,
@@ -11,6 +12,7 @@ import {
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useSQLiteContext } from "expo-sqlite";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import {
   ActionButton,
   AppInput,
@@ -20,12 +22,14 @@ import {
   Screen,
 } from "@/components/ui";
 import { ProgressBar } from "@/components/projects/progress-bar";
-import { milestoneRepository, projectRepository } from "@/data/repositories";
+import { milestoneRepository, projectRepository, taskRepository } from "@/data/repositories";
+import { flushPendingWrites, queueWrite } from "@/data/pending-writes";
 import type { Milestone, ProjectDetail, TaskItem } from "@/data/types";
 import { useDataVersion } from "@/providers/data-version-provider";
 import { useLanguage } from "@/providers/language-provider";
 import { useAppTheme } from "@/theme/theme";
 import { toDateKey } from "@/utils/date";
+import type { SQLiteDatabase } from "expo-sqlite";
 
 const PROJECT_COLORS = [
   "#6366F1", "#8B5CF6", "#EC4899", "#EF4444",
@@ -88,6 +92,7 @@ function MoveButton({ accessibilityLabel, disabled, icon, onPress }: { accessibi
 
 function CustomizeModal({ visible, color, icon, onClose, onSave }: { visible: boolean; color: string; icon: string; onClose: () => void; onSave: (color: string, icon: string) => void }) {
   const theme = useAppTheme();
+  const insets = useSafeAreaInsets();
   const { t } = useLanguage();
   const [selColor, setSelColor] = useState(color);
   const [selIcon, setSelIcon] = useState(icon);
@@ -95,7 +100,8 @@ function CustomizeModal({ visible, color, icon, onClose, onSave }: { visible: bo
   return (
     <Modal animationType="slide" onRequestClose={onClose} transparent visible={visible}>
       <Pressable onPress={onClose} style={[styles.modalScrim, { backgroundColor: theme.scrim }]}>
-        <Pressable style={[styles.modalSheet, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+        <Pressable accessibilityViewIsModal style={[styles.modalSheet, { backgroundColor: theme.surface, borderColor: theme.border, marginBottom: Math.max(12, insets.bottom), maxHeight: '90%' }]}>
+          <ScrollView contentContainerStyle={{ gap: 16 }} showsVerticalScrollIndicator={false}>
           <View style={styles.sheetHandle} />
           <Text style={[styles.sheetTitle, { color: theme.text }]}>{t("customizeProject")}</Text>
           <Text style={[styles.sheetSection, { color: theme.textMuted }]}>{t("projectColor")}</Text>
@@ -115,6 +121,7 @@ function CustomizeModal({ visible, color, icon, onClose, onSave }: { visible: bo
             ))}
           </View>
           <ActionButton label={t("save")} onPress={() => { onSave(selColor, selIcon); onClose(); }} />
+          </ScrollView>
         </Pressable>
       </Pressable>
     </Modal>
@@ -139,33 +146,40 @@ export default function ProjectDetailScreen() {
   const [showCustomize, setShowCustomize] = useState(false);
   const [notesText, setNotesText] = useState("");
   const [notesDirty, setNotesDirty] = useState(false);
+  const [notesError, setNotesError] = useState(false);
+  const notesGeneration = useRef(0);
   const [milestoneTitle, setMilestoneTitle] = useState("");
+  const [activeMilestone, setActiveMilestone] = useState<Milestone | null>(null);
   const today = useMemo(() => toDateKey(new Date()), []);
 
   useEffect(() => {
     let active = true;
     if (!projectId) { setLoading(false); return () => { active = false; }; }
     setLoading(true);
-    Promise.all([projectRepository.getById(db, projectId), milestoneRepository.list(db, projectId)])
+    const generation = notesGeneration.current;
+    flushPendingWrites(db).then(() => Promise.all([projectRepository.getById(db, projectId), milestoneRepository.list(db, projectId)]))
       .then(([nextProject, nextMilestones]) => {
         if (active) {
           setProject(nextProject);
           setMilestones(nextMilestones);
-          if (nextProject && !notesDirty) setNotesText(nextProject.description ?? "");
+          if (nextProject && generation === notesGeneration.current) setNotesText(nextProject.description ?? "");
         }
       })
+      .catch(() => { if (active) Alert.alert(t('projectNotes'), t('errorGeneric')); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [db, projectId, version]);
 
-  useEffect(() => {
-    if (!notesDirty || !project) return;
-    const timer = setTimeout(async () => {
-      await projectRepository.updateMetadata(db, project.id, { description: notesText });
-      setNotesDirty(false);
-    }, 900);
-    return () => clearTimeout(timer);
-  }, [notesText, notesDirty, project, db]);
+  function saveNotes(text: string) {
+    if (!projectId) return;
+    const generation = ++notesGeneration.current;
+    setNotesText(text);
+    setNotesDirty(true);
+    setNotesError(false);
+    void queueWrite(db, `project-notes:${projectId}`, () => projectRepository.updateMetadata(db, projectId, { description: text }))
+      .then(() => { if (generation === notesGeneration.current) setNotesDirty(false); })
+      .catch(() => { if (generation === notesGeneration.current) setNotesError(true); });
+  }
 
   async function addTask() {
     const firstColumn = project?.columns[0];
@@ -337,10 +351,13 @@ export default function ProjectDetailScreen() {
                   >
                     {ms.completed && <Ionicons color="#fff" name="checkmark" size={14} />}
                   </Pressable>
-                  <View style={styles.flex}>
+                  <Pressable onPress={() => setActiveMilestone(ms)} style={styles.flex}>
                     <Text style={[styles.milestoneTitle, { color: ms.completed ? theme.textMuted : theme.text }, ms.completed && styles.taskDone]}>{ms.title}</Text>
                     {ms.targetDate && <Text style={[styles.milestoneDate, { color: theme.textMuted }]}>{ms.targetDate}</Text>}
-                  </View>
+                    <Text style={{ fontSize: 12, marginTop: 2, color: theme.textMuted, fontWeight: '600' }}>
+                      {t("milestoneTasksCount").replace("{count}", String(project.allTasks.filter(t => t.milestoneId === ms.id).length))}
+                    </Text>
+                  </Pressable>
                   <Pressable hitSlop={10} onPress={() => void milestoneRepository.remove(db, ms.id).then(refresh)} style={styles.removeMilestone}>
                     <Ionicons color={theme.danger} name="trash-outline" size={16} />
                   </Pressable>
@@ -355,20 +372,80 @@ export default function ProjectDetailScreen() {
         <Card style={styles.notesCard}>
           <TextInput
             multiline
-            onChangeText={(text) => { setNotesText(text); setNotesDirty(true); }}
+            accessibilityLabel={t('projectNotes')}
+            onChangeText={saveNotes}
             placeholder={t("projectNotesPlaceholder")}
             placeholderTextColor={theme.textMuted}
             style={[styles.notesInput, { color: theme.text }]}
             value={notesText}
           />
-          {!notesDirty && notesText.length > 0 && (
-            <Text style={[styles.savedLabel, { color: theme.textMuted }]}>{t("saved")} ✓</Text>
-          )}
+          <Text accessibilityLiveRegion="polite" style={[styles.savedLabel, { color: notesError ? theme.danger : theme.textMuted }]}>
+            {notesError ? t('notesSaveError') : notesDirty ? t('reviewSaving') : t('reviewSaved')}
+          </Text>
+          {notesError && <ActionButton label={t('save')} onPress={() => saveNotes(notesText)} />}
         </Card>
       )}
 
       <CustomizeModal visible={showCustomize} color={project.color} icon={project.icon} onClose={() => setShowCustomize(false)} onSave={(c, ic) => void handleSaveCustomize(c, ic)} />
+
+      {activeMilestone && (
+        <MilestoneTasksModal
+          visible={!!activeMilestone}
+          milestone={activeMilestone}
+          project={project}
+          onClose={() => setActiveMilestone(null)}
+          db={db}
+          refresh={refresh}
+        />
+      )}
     </Screen>
+  );
+}
+
+function MilestoneTasksModal({ visible, milestone, project, onClose, db, refresh }: { visible: boolean; milestone: Milestone; project: ProjectDetail; onClose: () => void; db: SQLiteDatabase; refresh: () => void }) {
+  const theme = useAppTheme();
+  const insets = useSafeAreaInsets();
+  const { t } = useLanguage();
+
+  return (
+    <Modal animationType="slide" onRequestClose={onClose} transparent visible={visible}>
+      <Pressable onPress={onClose} style={[styles.modalScrim, { backgroundColor: theme.scrim }]}>
+        <Pressable accessibilityViewIsModal style={[styles.modalSheet, { backgroundColor: theme.surface, borderColor: theme.border, marginBottom: Math.max(12, insets.bottom), maxHeight: '80%' }]}>
+          <View style={styles.sheetHandle} />
+          <Text style={[styles.sheetTitle, { color: theme.text }]}>{milestone.title}</Text>
+          <Text style={[styles.sheetSection, { color: theme.textMuted }]}>{t("assignTasks")}</Text>
+
+          <ScrollView style={{ flexShrink: 1, marginTop: 8 }}>
+            {project.allTasks.length === 0 ? (
+              <Text style={{ color: theme.textMuted, textAlign: 'center', marginTop: 20 }}>{t("milestoneTasksEmpty")}</Text>
+            ) : (
+              project.allTasks.map(task => {
+                const isAssigned = task.milestoneId === milestone.id;
+                return (
+                  <Pressable
+                    key={task.id}
+                    accessibilityRole="checkbox"
+                    accessibilityLabel={task.title}
+                    accessibilityState={{ checked: isAssigned }}
+                    style={{ flexDirection: 'row', alignItems: 'center', gap: 12, paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: theme.border }}
+                    onPress={async () => {
+                      await taskRepository.setMilestone(db, task.id, isAssigned ? null : milestone.id);
+                      refresh();
+                    }}
+                  >
+                    <View style={[styles.milestoneCheck, { backgroundColor: isAssigned ? project.color : 'transparent', borderColor: isAssigned ? project.color : theme.borderStrong, width: 24, height: 24, borderRadius: 8, borderWidth: isAssigned ? 0 : 2 }]}>
+                      {isAssigned && <Ionicons color="#fff" name="checkmark" size={14} />}
+                    </View>
+                    <Text style={{ flex: 1, color: theme.text, fontSize: 15 }}>{task.title}</Text>
+                  </Pressable>
+                );
+              })
+            )}
+          </ScrollView>
+          <ActionButton label={t("save")} onPress={onClose} />
+        </Pressable>
+      </Pressable>
+    </Modal>
   );
 }
 

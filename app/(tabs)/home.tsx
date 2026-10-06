@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { ComponentProps } from 'react';
 import { Ionicons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -31,6 +31,8 @@ export default function HomeScreen() {
   const { refresh, version } = useDataVersion();
   const [summary, setSummary] = useState(emptySummary);
   const [capture, setCapture] = useState('');
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const [loading, setLoading] = useState(true);
   const today = useMemo(() => toDateKey(new Date()), []);
 
@@ -38,23 +40,29 @@ export default function HomeScreen() {
     let active = true;
     dashboardRepository.getSummary(db, today)
       .then((nextSummary) => { if (active) setSummary(nextSummary); })
+      .catch(() => { if (active) Alert.alert(t('tabHome'), t('errorGeneric')); })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [db, today, version]);
 
   async function addCapture() {
-    if (!capture.trim()) return;
-    await inboxRepository.create(db, capture);
-    setCapture('');
-    refresh();
+    if (!capture.trim() || savingRef.current) return;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await inboxRepository.create(db, capture);
+      setCapture('');
+      refresh();
+    } catch { Alert.alert(t('saveToInbox'), t('errorGeneric')); }
+    finally { savingRef.current = false; setSaving(false); }
   }
 
-  const nextAction = summary.inboxCount > 0
-    ? { title: t('homeInboxAction'), hint: t('homeInboxHint'), count: summary.inboxCount, route: '/inbox' }
-    : summary.overdueCount > 0
-      ? { title: t('homeOverdueAction'), hint: t('homeOverdueHint'), count: summary.overdueCount, route: '/today' }
-      : summary.todayCount > 0
-        ? { title: t('homeTodayAction'), hint: t('homeTodayHint'), count: summary.todayCount, route: '/today' }
+  const nextAction = summary.overdueCount > 0
+    ? { title: t('homeOverdueAction'), hint: t('homeOverdueHint'), count: summary.overdueCount, route: '/today' }
+    : summary.todayCount > 0
+      ? { title: t('homeTodayAction'), hint: t('homeTodayHint'), count: summary.todayCount, route: '/today' }
+      : summary.inboxCount > 0
+        ? { title: t('homeInboxAction'), hint: t('homeInboxHint'), count: summary.inboxCount, route: '/inbox' }
         : summary.unscheduledCount > 0
           ? { title: t('homeUnscheduledAction'), hint: t('homeUnscheduledHint'), count: summary.unscheduledCount, route: '/today' }
         : summary.completedTodayCount > 0
@@ -69,18 +77,11 @@ export default function HomeScreen() {
     <Screen>
       <ScreenHeader
         action={<IconButton icon="settings-outline" label={t('settingsTitle')} onPress={() => router.push('/settings')} />}
-        eyebrow={t('homeEyebrow')}
-        subtitle={t('homeSubtitle')}
+        subtitle={dateLabel}
         title={t('homeTitle')}
       />
-      <View style={[styles.datePill, { backgroundColor: theme.surfaceRaised }]}>
-        <Ionicons color={theme.textMuted} name="sunny-outline" size={14} />
-        <Text style={[styles.date, { color: theme.textSecondary }]}>{dateLabel}</Text>
-      </View>
-
-      <SectionHeader title={t('nextStep')} />
       {loading ? <LoadingView /> : (
-        <Pressable onPress={() => router.push(nextAction.route)}>
+        <Pressable accessibilityRole="button" onPress={() => router.push(nextAction.route)}>
           <LinearGradient colors={[theme.accentStrong, theme.accent, '#9C6BFF']} end={{ x: 1, y: 1 }} start={{ x: 0, y: 0 }} style={styles.nextCard}>
             <View style={styles.glowLarge} />
             <View style={styles.glowSmall} />
@@ -99,22 +100,7 @@ export default function HomeScreen() {
         </Pressable>
       )}
 
-      <Pressable accessibilityRole="button" onPress={() => router.push('/review')}>
-        {({ pressed }) => (
-          <Card style={[styles.linkCard, styles.reviewLinkCard, { opacity: pressed ? 0.78 : 1 }]} tone="success">
-            <View style={[styles.linkIcon, { backgroundColor: theme.successSurface }]}><Ionicons color={theme.success} name="journal" size={21} /></View>
-            <View style={styles.flex}>
-              <Text style={[styles.linkTitle, { color: theme.text }]}>{t('reviewDaily')}</Text>
-              <Text style={[styles.linkHint, { color: theme.textMuted }]}>{t('reviewDailyHint')}</Text>
-            </View>
-            <View style={[styles.linkArrow, { backgroundColor: theme.surfaceRaised }]}>
-              <Ionicons color={theme.success} name="arrow-forward" size={18} />
-            </View>
-          </Card>
-        )}
-      </Pressable>
-
-      <Card tone="accent">
+      <Card>
         <View style={styles.captureTitleRow}>
           <View style={[styles.smallIcon, { backgroundColor: theme.accentSurfaceStrong }]}><Ionicons color={theme.accentSoft} name="flash" size={17} /></View>
           <Text style={[styles.cardTitle, { color: theme.text }]}>{t('quickCaptureHome')}</Text>
@@ -122,6 +108,7 @@ export default function HomeScreen() {
         <Text style={[styles.cardHint, { color: theme.textMuted }]}>{t('quickCaptureHomeHint')}</Text>
         <View style={styles.captureRow}>
           <AppInput
+            editable={!saving}
             onChangeText={setCapture}
             onSubmitEditing={() => void addCapture()}
             placeholder={t('capturePlaceholder')}
@@ -129,7 +116,7 @@ export default function HomeScreen() {
             style={styles.flex}
             value={capture}
           />
-          <ActionButton disabled={!capture.trim()} icon="arrow-up" label={t('add')} onPress={() => void addCapture()} />
+          <ActionButton disabled={saving || !capture.trim()} icon="arrow-up" label={saving ? t('reviewSaving') : t('add')} onPress={() => void addCapture()} />
         </View>
       </Card>
 
@@ -141,7 +128,18 @@ export default function HomeScreen() {
         <NavigationTile count={summary.activeProjectCount} icon="grid" label={t('tabProjects')} onPress={() => router.push('/projects')} tone="success" />
       </View>
 
-      <Pressable onPress={() => router.push('/archive')}>
+      <Pressable accessibilityRole="button" onPress={() => router.push('/review')}>
+        <Card style={styles.linkCard}>
+          <View style={[styles.linkIcon, { backgroundColor: theme.successSurface }]}><Ionicons color={theme.success} name="journal-outline" size={21} /></View>
+          <View style={styles.flex}>
+            <Text style={[styles.linkTitle, { color: theme.text }]}>{t('reviewDaily')}</Text>
+            <Text style={[styles.linkHint, { color: theme.textMuted }]}>{t('reviewDailyHint')}</Text>
+          </View>
+          <Ionicons color={theme.textMuted} name="chevron-forward" size={18} />
+        </Card>
+      </Pressable>
+
+      <Pressable accessibilityRole="button" onPress={() => router.push('/archive')}>
         <Card style={styles.linkCard}>
           <View style={[styles.linkIcon, { backgroundColor: theme.surfaceRaised }]}><Ionicons color={theme.textMuted} name="archive" size={21} /></View>
           <View style={styles.flex}>
@@ -168,7 +166,7 @@ function NavigationTile({ count, icon, label, onPress, tone }: { count?: number;
         ? { background: theme.successSurface, foreground: theme.success }
         : { background: theme.surfaceRaised, foreground: theme.info };
   return (
-    <Pressable onPress={onPress} style={({ pressed }) => [styles.tile, { backgroundColor: theme.surface, borderColor: theme.border, opacity: pressed ? 0.76 : 1 }]}>
+    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [styles.tile, { backgroundColor: theme.surface, borderColor: theme.border, opacity: pressed ? 0.76 : 1 }]}>
       <View style={[styles.tileIcon, { backgroundColor: colors.background }]}><Ionicons color={colors.foreground} name={icon} size={21} /></View>
       <View style={styles.tileFooter}>
         <Text style={[styles.tileLabel, { color: theme.text }]}>{label}</Text>
@@ -180,15 +178,13 @@ function NavigationTile({ count, icon, label, onPress, tone }: { count?: number;
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
-  datePill: { alignSelf: 'flex-start', borderRadius: 12, flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 11, paddingVertical: 7 },
-  date: { fontSize: 12, fontWeight: '700', textTransform: 'capitalize' },
-  nextCard: { borderRadius: 28, flexDirection: 'row', alignItems: 'center', minHeight: 190, overflow: 'hidden', padding: 22 },
+  nextCard: { borderRadius: 24, flexDirection: 'row', alignItems: 'center', minHeight: 130, overflow: 'hidden', padding: 18 },
   glowLarge: { position: 'absolute', width: 170, height: 170, borderRadius: 85, backgroundColor: 'rgba(255,255,255,0.09)', right: -50, top: -68 },
   glowSmall: { position: 'absolute', width: 82, height: 82, borderRadius: 41, backgroundColor: 'rgba(255,255,255,0.08)', right: 34, bottom: -35 },
   nextCopy: { flex: 1, paddingRight: 12 },
-  nextLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 18 },
+  nextLabelRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
   nextLabel: { color: '#EDE9FF', fontSize: 10, fontWeight: '900', letterSpacing: 1.2, textTransform: 'uppercase' },
-  nextTitle: { color: '#FFFFFF', fontSize: 24, fontWeight: '900', letterSpacing: -0.5 },
+  nextTitle: { color: '#FFFFFF', fontSize: 21, fontWeight: '900', letterSpacing: -0.5 },
   nextHint: { color: '#E9E7FF', fontSize: 13, lineHeight: 19, marginTop: 8, maxWidth: 245 },
   nextMetric: { alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 21, height: 56, justifyContent: 'center', width: 56 },
   nextCount: { color: '#FFFFFF', fontSize: 25, fontWeight: '900' },
@@ -198,15 +194,13 @@ const styles = StyleSheet.create({
   cardHint: { fontSize: 12, lineHeight: 18, marginTop: 4 },
   captureRow: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 12 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-  tile: { borderRadius: 22, borderWidth: 1, minHeight: 128, padding: 16, justifyContent: 'space-between', width: '48%' },
-  tileIcon: { alignItems: 'center', borderRadius: 15, height: 44, justifyContent: 'center', width: 44 },
+  tile: { borderRadius: 18, borderWidth: 1, minHeight: 92, padding: 12, gap: 8, justifyContent: 'space-between', width: '48%' },
+  tileIcon: { alignItems: 'center', borderRadius: 10, height: 30, justifyContent: 'center', width: 30 },
   tileFooter: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   tileCount: { fontSize: 18, fontWeight: '900' },
   tileLabel: { flex: 1, fontSize: 14, fontWeight: '800' },
   linkCard: { flexDirection: 'row', alignItems: 'center', gap: 12 },
-  reviewLinkCard: { borderColor: 'transparent' },
   linkIcon: { alignItems: 'center', borderRadius: 16, height: 48, justifyContent: 'center', width: 48 },
-  linkArrow: { alignItems: 'center', borderRadius: 13, height: 40, justifyContent: 'center', width: 40 },
   linkTitle: { fontSize: 16, fontWeight: '800' },
   linkHint: { fontSize: 12, lineHeight: 18, marginTop: 3 },
   archiveCount: { borderRadius: 12, fontSize: 12, fontWeight: '800', overflow: 'hidden', paddingHorizontal: 9, paddingVertical: 5 },

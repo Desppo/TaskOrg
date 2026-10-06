@@ -53,7 +53,7 @@ if (isWindows) {
   run('./gradlew', ['assembleRelease', '--no-daemon', '--console=plain'], androidRoot, buildEnv);
 }
 
-const { version } = require(path.join(mobileRoot, 'package.json'));
+const { expo: { version } } = require(path.join(mobileRoot, 'app.json'));
 const sourceApk = path.join(androidRoot, 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk');
 const releaseDir = path.join(mobileRoot, 'releases');
 const releaseApk = path.join(releaseDir, `TaskOrg-${version}-android-preview.apk`);

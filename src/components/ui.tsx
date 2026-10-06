@@ -1,6 +1,9 @@
-import { useState, type ComponentProps, type ReactNode } from 'react';
+import { createContext, useContext, useId, useState, type ComponentProps, type ReactNode } from 'react';
 import {
   ActivityIndicator,
+  InputAccessoryView,
+  Keyboard,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -13,24 +16,50 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Haptics from 'expo-haptics';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSegments } from 'expo-router';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useLanguage } from '@/providers/language-provider';
 import { useAppTheme } from '@/theme/theme';
+import { tabBarLayout } from '@/utils/tab-bar';
 
-export function Screen({ children, scroll = true }: { children: ReactNode; scroll?: boolean }) {
+const KeyboardAccessoryContext = createContext<string | undefined>(undefined);
+
+export function Screen({ children, scroll = true, contentStyle }: { children: ReactNode; scroll?: boolean; contentStyle?: StyleProp<ViewStyle> }) {
   const theme = useAppTheme();
-  const content = <View style={[styles.content, !scroll && styles.contentFixed]}>{children}</View>;
+  const { t } = useLanguage();
+  const insets = useSafeAreaInsets();
+  const segments = useSegments();
+  const accessoryId = useId();
+  const paddingBottom = segments.some((segment) => segment === '(tabs)')
+    ? tabBarLayout(insets.bottom).contentPadding
+    : insets.bottom + 24;
+  const content = <View style={[styles.content, contentStyle, { paddingBottom }, !scroll && styles.contentFixed]}>{children}</View>;
   return (
-    <SafeAreaView edges={['top']} style={[styles.safe, { backgroundColor: theme.background }]}>
-      {scroll ? (
-        <ScrollView
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
-          {content}
-        </ScrollView>
-      ) : content}
-    </SafeAreaView>
+    <KeyboardAccessoryContext.Provider value={Platform.OS === 'ios' ? accessoryId : undefined}>
+      <SafeAreaView edges={['top', 'left', 'right']} style={[styles.safe, { backgroundColor: theme.background }]}>
+        {scroll ? (
+          <ScrollView
+            contentContainerStyle={styles.scrollContent}
+            automaticallyAdjustKeyboardInsets
+            contentInsetAdjustmentBehavior="never"
+            keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {content}
+          </ScrollView>
+        ) : content}
+        {Platform.OS === 'ios' ? (
+          <InputAccessoryView nativeID={accessoryId} backgroundColor={theme.surface}>
+            <View style={[styles.keyboardToolbar, { borderColor: theme.border }]}>
+              <Pressable accessibilityRole="button" onPress={Keyboard.dismiss} style={styles.keyboardDone}>
+                <Text style={[styles.backText, { color: theme.accentSoft }]}>{t('hideKeyboard')}</Text>
+              </Pressable>
+            </View>
+          </InputAccessoryView>
+        ) : null}
+      </SafeAreaView>
+    </KeyboardAccessoryContext.Provider>
   );
 }
 
@@ -68,10 +97,13 @@ export function Card({ children, style, tone = 'default' }: { children: ReactNod
 
 export function AppInput(props: TextInputProps) {
   const theme = useAppTheme();
+  const accessoryId = useContext(KeyboardAccessoryContext);
   const [focused, setFocused] = useState(false);
   return (
     <TextInput
       placeholderTextColor={theme.textMuted}
+      accessibilityLabel={props.accessibilityLabel ?? props.placeholder}
+      inputAccessoryViewID={props.keyboardType === 'number-pad' ? accessoryId : undefined}
       {...props}
       onBlur={(event) => { setFocused(false); props.onBlur?.(event); }}
       onFocus={(event) => { setFocused(true); props.onFocus?.(event); }}
@@ -113,6 +145,7 @@ export function ActionButton({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityState={{ disabled }}
       disabled={disabled}
       onPress={handlePress}
       style={({ pressed }) => [
@@ -194,7 +227,9 @@ export function BackButton({ label, onPress }: { label: string; onPress: () => v
 const styles = StyleSheet.create({
   safe: { flex: 1 },
   scrollContent: { flexGrow: 1 },
-  content: { paddingHorizontal: 20, paddingTop: 10, paddingBottom: 118, gap: 20 },
+  content: { paddingHorizontal: 20, paddingTop: 10, gap: 20 },
+  keyboardToolbar: { alignItems: 'flex-end', borderTopWidth: 1, paddingHorizontal: 16 },
+  keyboardDone: { minHeight: 44, justifyContent: 'center', paddingHorizontal: 12 },
   contentFixed: { flex: 1 },
   screenHeader: { flexDirection: 'row', alignItems: 'flex-start', gap: 12 },
   screenHeaderCopy: { flex: 1 },
@@ -237,6 +272,6 @@ const styles = StyleSheet.create({
   sectionSubtitle: { fontSize: 12, lineHeight: 18, marginTop: 4 },
   sectionCount: { alignItems: 'center', borderRadius: 13, minWidth: 34, paddingHorizontal: 9, paddingVertical: 6 },
   sectionCountText: { fontSize: 12, fontWeight: '900' },
-  backButton: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', minHeight: 40, paddingRight: 14 },
+  backButton: { alignSelf: 'flex-start', flexDirection: 'row', alignItems: 'center', minHeight: 44, paddingRight: 14 },
   backText: { fontSize: 14, fontWeight: '800' },
 });

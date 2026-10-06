@@ -1,6 +1,6 @@
 {
   "name": "taskorg-mobile",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "description": "A bilingual, local-first personal organization app built with Expo, React Native, TypeScript, and SQLite.",
   "private": true,
   "license": "MIT",
@@ -16,8 +16,15 @@
   "scripts": {
     "dev": "expo start",
     "dev:lan": "node scripts/start-lan.js",
+    "dev:iphone": "node scripts/start-lan.js --go",
     "android": "expo run:android",
-    "build": "expo export --platform android --output-dir dist",
+    "build": "expo export --platform all --output-dir dist",
+    "build:android": "expo export --platform android --output-dir dist/android",
+    "build:ios": "expo export --platform ios --output-dir dist/ios",
+    "build:ios:simulator": "npx eas-cli@21.4.0 build --platform ios --profile simulator",
+    "build:ios:preview": "npx eas-cli@21.4.0 build --platform ios --profile preview",
+    "build:ipa": "npx eas-cli@21.4.0 build --platform ios --profile production",
+    "test": "node --test tests/*.test.cjs",
     "build:apk": "node scripts/build-android-local.js",
     "build:apk:cloud": "npx eas-cli@21.4.0 build --platform android --profile preview",
     "build:aab": "npx eas-cli@21.4.0 build --platform android --profile production",
@@ -28,11 +35,11 @@
   },
   "dependencies": {
     "@expo/vector-icons": "15.0.3",
-    "expo": "~54.0.0",
-    "expo-constants": "~18.0.13",
+    "expo": "~54.0.37",
+    "expo-constants": "~18.0.14",
     "expo-crypto": "~15.0.9",
     "expo-document-picker": "~14.0.8",
-    "expo-file-system": "~19.0.23",
+    "expo-file-system": "~19.0.24",
     "expo-font": "~14.0.12",
     "expo-haptics": "~15.0.8",
     "expo-linear-gradient": "~15.0.8",
@@ -56,6 +63,20 @@
     "typescript": "^5.9.3"
   },
   "overrides": {
-    "postcss": "8.5.18"
+    "postcss": "8.5.23",
+    "metro": "0.83.8",
+    "metro-babel-transformer": "0.83.8",
+    "metro-cache": "0.83.8",
+    "metro-cache-key": "0.83.8",
+    "metro-config": "0.83.8",
+    "metro-core": "0.83.8",
+    "metro-file-map": "0.83.8",
+    "metro-minify-terser": "0.83.8",
+    "metro-resolver": "0.83.8",
+    "metro-runtime": "0.83.8",
+    "metro-source-map": "0.83.8",
+    "metro-symbolicate": "0.83.8",
+    "metro-transform-plugins": "0.83.8",
+    "metro-transform-worker": "0.83.8"
   }
 }

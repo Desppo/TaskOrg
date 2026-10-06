@@ -5,6 +5,7 @@ import { Tabs } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLanguage } from '@/providers/language-provider';
 import { useAppTheme } from '@/theme/theme';
+import { tabBarLayout } from '@/utils/tab-bar';
 
 type IconName = ComponentProps<typeof Ionicons>['name'];
 
@@ -21,6 +22,7 @@ export default function TabsLayout() {
   const { t } = useLanguage();
   const theme = useAppTheme();
   const insets = useSafeAreaInsets();
+  const bar = tabBarLayout(insets.bottom);
   return (
     <Tabs
       initialRouteName="home"
@@ -34,8 +36,8 @@ export default function TabsLayout() {
           position: 'absolute',
           left: 12,
           right: 12,
-          bottom: Math.max(10, insets.bottom + 4),
-          height: 70 + Math.min(insets.bottom, 16),
+          bottom: bar.bottom,
+          height: bar.height,
           borderRadius: 28,
           borderTopWidth: 1,
           borderWidth: 1,
